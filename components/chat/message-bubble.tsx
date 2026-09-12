@@ -7,8 +7,9 @@ import { MarkdownRenderer } from "./markdown-renderer"
 import Image from "next/image"
 import { AnimatedOrb } from "./animated-orb"
 import { Renderer, type ActionEvent } from "@openuidev/react-lang"
-import { ThemeProvider } from "@openuidev/react-ui"
+import { ThemeProvider } from "@openuidev/react-ui/ThemeProvider"
 import { bloomLibrary } from "@/lib/openui/bloom-library"
+import { looksLikeOpenUI } from "@/lib/openui/detect"
 
 interface MessageBubbleProps {
   message: Message
@@ -20,38 +21,21 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
-function looksLikeOpenUI(content: string): boolean {
-  const trimmed = content.trim()
-  if (!trimmed) return false
-  if (trimmed.includes("root = Stack(") || /\bStack\s*\(/.test(trimmed)) return true
-  if (trimmed.includes("root = Root(") || /\bRoot\s*\(/.test(trimmed)) return true
-  if (trimmed.includes("root = Card(") || /\bCard\s*\(/.test(trimmed)) return true
-  if (trimmed.startsWith("]]>openui") || trimmed.includes("openui-lang")) return true
-  if (
-    /\b(MessageText|TokenList|TokenRow|ChainList|ChainRow|QuoteSummary|ConfirmTx|ApprovalCard|TxStatusCard|GaslessOrderCard|ChainedPlanCard|LpPositionCard|PoolTelemetry|CostBreakdown|TextContent|Table|BarChart|LineChart|PieChart|Button|Form|Tabs)\s*\(/.test(
-      trimmed
-    )
-  ) {
-    return true
-  }
-  return false
-}
-
 export function MessageBubble({
   message,
   isStreaming = false,
   onOpenUIAction,
 }: MessageBubbleProps) {
   const isUser = message.role === "user"
-  const useOpenUI = !isUser && looksLikeOpenUI(message.content)
+  const useOpenUI = !isUser && looksLikeOpenUI(message.content, isStreaming)
 
   return (
     <div
       className={cn(
-        "flex max-w-[90%] gap-2 md:max-w-[80%]",
+        "flex gap-2",
         isUser
-          ? "ml-auto flex-row-reverse user-message-enter"
-          : "mr-auto animate-in fade-in slide-in-from-bottom-2 items-end duration-300"
+          ? "ml-auto max-w-[90%] flex-row-reverse user-message-enter md:max-w-[80%]"
+          : "mr-auto w-full max-w-[min(100%,56rem)] animate-in fade-in slide-in-from-bottom-2 items-end duration-300"
       )}
     >
       <div
@@ -69,7 +53,12 @@ export function MessageBubble({
         )}
       </div>
 
-      <div className={cn("flex flex-col", isUser ? "items-end" : "items-start")}>
+      <div
+        className={cn(
+          "flex min-w-0 flex-col",
+          isUser ? "items-end" : "w-full items-stretch"
+        )}
+      >
         <span className="mb-1 mt-2 hidden text-xs text-muted-foreground sm:block">
           {isUser ? "You" : "Assistant"}
         </span>
@@ -79,14 +68,14 @@ export function MessageBubble({
             "overflow-hidden rounded-2xl border-none",
             isUser
               ? "rounded-br-md border border-border bg-card text-foreground"
-              : "rounded-bl-md bg-transparent text-foreground"
+              : "w-full rounded-bl-md bg-transparent text-foreground"
           )}
           style={{
             willChange: isStreaming ? "height" : "auto",
             transition: "all 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
-          <div className={cn(isUser ? "px-4 py-3" : "py-1")}>
+          <div className={cn(isUser ? "px-4 py-3" : "w-full py-1")}>
             {isUser ? (
               <div className="flex flex-col gap-2">
                 {message.imageData && (
@@ -106,7 +95,7 @@ export function MessageBubble({
               </div>
             ) : useOpenUI ? (
               <ThemeProvider mode="dark" cssSelector=".openui-bloom">
-                <div className="openui-bloom w-full min-w-0 max-w-xl">
+                <div className="openui-bloom w-full min-w-0 [&_.recharts-responsive-container]:!w-full">
                   <Renderer
                     library={bloomLibrary}
                     response={message.content}

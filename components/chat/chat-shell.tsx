@@ -2,10 +2,13 @@
 
 import { useEffect, useState, useCallback, useRef } from "react"
 import { MessageSquare } from "lucide-react"
-import { MessageList } from "./message-list"
+import { AgentCanvas } from "./agent-canvas"
+import { ChatTranscript } from "./chat-transcript"
 import { Composer, type AIModel } from "./composer"
 import { ConversationsSidebar } from "./conversations-sidebar"
 import { SettingsPopover } from "./settings-popover"
+import { LiveFeedProvider } from "./live-feed-context"
+import { useMissionLive } from "./use-mission-live"
 import { Button } from "@/components/ui/button"
 import { usePrivy } from "@privy-io/react-auth"
 import Image from "next/image"
@@ -69,6 +72,7 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   const [selectedModel, setSelectedModel] = useState<AIModel>("openai/gpt-4o")
   const [isLoaded, setIsLoaded] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [walletBalanceLabel, setWalletBalanceLabel] = useState<string | null>(null)
   const messagesRef = useRef<Message[]>([])
   const activeIdRef = useRef<string | null>(null)
 
@@ -79,6 +83,34 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   useEffect(() => {
     activeIdRef.current = activeId
   }, [activeId])
+
+  useEffect(() => {
+    if (!walletAddress) {
+      setWalletBalanceLabel(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const token = await getAccessToken()
+        if (!token || cancelled) return
+        const res = await fetch(
+          `/api/wallet/balance?chainId=1&address=${encodeURIComponent(walletAddress)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+        if (!res.ok || cancelled) return
+        const data = await res.json()
+        if (cancelled) return
+        const parts = [data.nativeDisplay, data.usdcDisplay].filter(Boolean)
+        setWalletBalanceLabel(parts.join(" · ") || null)
+      } catch {
+        if (!cancelled) setWalletBalanceLabel(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [walletAddress, getAccessToken])
 
   useEffect(() => {
     try {
@@ -398,8 +430,36 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   const displayName = userName || userEmail.split("@")[0]
   const walletLabel = walletAddress ? shortenAddress(walletAddress) : null
 
+  const {
+    liveActive,
+    agentEvents,
+    working,
+    tapeRows,
+    lastTick,
+    missionAction,
+    refreshLiveStatus,
+  } = useMissionLive({
+    conversationId: activeId,
+    chainId: 1,
+    refreshKey: messages.length,
+  })
+
+  useEffect(() => {
+    if (!isStreaming) void refreshLiveStatus()
+  }, [isStreaming, refreshLiveStatus])
+
   return (
-    <div className="relative h-dvh bg-background">
+    <LiveFeedProvider
+      value={{
+        liveActive,
+        working,
+        events: agentEvents,
+        tapeRows,
+        lastTick,
+        missionAction,
+      }}
+    >
+    <div className="relative h-dvh overflow-hidden bg-background">
       <ConversationsSidebar
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -410,46 +470,56 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
         onDelete={handleDeleteConversation}
       />
 
-      <div className="absolute left-4 top-4 z-20 flex items-center gap-2">
-        <Link href="/" className="flex items-center">
-          <Image
-            src="/images/flowforge.png"
-            alt="FlowForge"
-            width={36}
-            height={36}
-            className="rounded-lg"
-          />
-        </Link>
-        <Button
-          onClick={() => setSidebarOpen(true)}
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10 rounded-full bg-muted text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Open conversations"
-        >
-          <MessageSquare className="h-5 w-5" />
-        </Button>
-      </div>
-
-      <div className="absolute right-4 top-4 z-20 flex items-center gap-2">
-        <div className="hidden flex-col items-end sm:flex">
-          <span className="max-w-[12rem] truncate text-xs text-muted-foreground">
-            {userEmail}
-          </span>
-          {walletLabel && (
-            <span className="font-mono text-[10px] text-muted-foreground/70">
-              {walletLabel}
-            </span>
-          )}
+      {/* Top chrome: icons only — canvas stays clear */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 px-4 pt-4">
+        <div className="pointer-events-auto flex items-center gap-2">
+          <Link href="/" className="flex items-center">
+            <Image
+              src="/images/flowforge.png"
+              alt="FlowForge"
+              width={36}
+              height={36}
+              className="rounded-lg"
+            />
+          </Link>
+          <Button
+            onClick={() => setSidebarOpen(true)}
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 rounded-full bg-muted/90 text-muted-foreground backdrop-blur-sm hover:bg-accent hover:text-foreground"
+            aria-label="Open conversations"
+          >
+            <MessageSquare className="h-5 w-5" />
+          </Button>
         </div>
-        <SettingsPopover
-          email={userEmail}
-          walletLabel={walletLabel}
-          onLogout={handleLogout}
-        />
+
+        <div className="pointer-events-auto flex items-center gap-2">
+          <div className="hidden flex-col items-end sm:flex">
+            <span className="max-w-[12rem] truncate text-xs text-muted-foreground">
+              {userEmail}
+            </span>
+            {walletLabel && (
+              <span className="font-mono text-[10px] text-muted-foreground/70">
+                {walletLabel}
+              </span>
+            )}
+            {walletBalanceLabel && (
+              <span className="text-[10px] text-muted-foreground">
+                {walletBalanceLabel}
+              </span>
+            )}
+          </div>
+          <SettingsPopover
+            email={userEmail}
+            walletLabel={walletLabel}
+            walletAddress={walletAddress}
+            onLogout={handleLogout}
+          />
+        </div>
       </div>
 
-      <MessageList
+      {/* Full-bleed agent canvas */}
+      <AgentCanvas
         messages={messages}
         isStreaming={isStreaming}
         error={error}
@@ -457,16 +527,27 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
         isLoaded={isLoaded}
         username={displayName}
         onOpenUIAction={handleOpenUIAction}
+        conversationKey={activeId}
+        topOffsetClassName="pt-16"
+        bottomOffsetClassName="pb-44 sm:pb-48"
       />
 
-      <Composer
-        onSend={sendMessage}
-        onStop={stopStreaming}
-        isStreaming={isStreaming}
-        disabled={!!error}
-        selectedModel={selectedModel}
-        onModelChange={handleModelChange}
-      />
+      {/* Bottom chat: transcript above input */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 pb-4">
+        <div className="pointer-events-none px-4">
+          <ChatTranscript messages={messages} isStreaming={isStreaming} />
+        </div>
+        <Composer
+          onSend={sendMessage}
+          onStop={stopStreaming}
+          isStreaming={isStreaming}
+          disabled={!!error}
+          selectedModel={selectedModel}
+          onModelChange={handleModelChange}
+          placement="bottom"
+        />
+      </div>
     </div>
+    </LiveFeedProvider>
   )
 }

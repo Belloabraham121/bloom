@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { LogOut, Settings } from "lucide-react"
+import { LogOut, RefreshCw, Settings } from "lucide-react"
 import { usePrivy } from "@privy-io/react-auth"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -10,12 +10,22 @@ import type { AgentMode } from "@/lib/types"
 type SettingsPopoverProps = {
   email?: string | null
   walletLabel?: string | null
+  walletAddress?: string | null
   onLogout: () => void
+}
+
+type BalancePayload = {
+  chainId: number
+  chainName: string
+  nativeDisplay: string
+  usdcDisplay: string | null
+  error?: string
 }
 
 export function SettingsPopover({
   email,
   walletLabel,
+  walletAddress,
   onLogout,
 }: SettingsPopoverProps) {
   const { getAccessToken } = usePrivy()
@@ -23,6 +33,40 @@ export function SettingsPopover({
   const [agentMode, setAgentMode] = useState<AgentMode>("human_mediated")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [balance, setBalance] = useState<BalancePayload | null>(null)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+  const [balanceError, setBalanceError] = useState<string | null>(null)
+
+  const loadBalance = useCallback(async () => {
+    if (!walletAddress) {
+      setBalance(null)
+      setBalanceError("No wallet linked")
+      return
+    }
+    setBalanceLoading(true)
+    setBalanceError(null)
+    try {
+      const token = await getAccessToken()
+      if (!token) throw new Error("Not authenticated")
+      const res = await fetch(
+        `/api/wallet/balance?chainId=1&address=${encodeURIComponent(walletAddress)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed to load balance")
+      setBalance({
+        chainId: data.chainId,
+        chainName: data.chainName,
+        nativeDisplay: data.nativeDisplay,
+        usdcDisplay: data.usdcDisplay,
+      })
+    } catch (e) {
+      setBalance(null)
+      setBalanceError(e instanceof Error ? e.message : "Balance unavailable")
+    } finally {
+      setBalanceLoading(false)
+    }
+  }, [getAccessToken, walletAddress])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -42,8 +86,10 @@ export function SettingsPopover({
   }, [getAccessToken])
 
   useEffect(() => {
-    if (open) void loadSettings()
-  }, [open, loadSettings])
+    if (!open) return
+    void loadSettings()
+    void loadBalance()
+  }, [open, loadSettings, loadBalance])
 
   const updateMode = async (mode: AgentMode) => {
     setSaving(true)
@@ -110,6 +156,44 @@ export function SettingsPopover({
               )}
             </div>
 
+            <div className="mb-3 rounded-lg border border-border/80 bg-muted/40 p-2.5">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Wallet balance
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void loadBalance()}
+                  disabled={balanceLoading}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  aria-label="Refresh balance"
+                >
+                  <RefreshCw
+                    className={cn("h-3.5 w-3.5", balanceLoading && "animate-spin")}
+                  />
+                </button>
+              </div>
+              {balanceLoading && !balance ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : balance ? (
+                <div className="space-y-0.5">
+                  <p className="text-sm font-medium">{balance.nativeDisplay}</p>
+                  {balance.usdcDisplay && (
+                    <p className="text-sm text-muted-foreground">
+                      {balance.usdcDisplay}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-muted-foreground">
+                    {balance.chainName}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-destructive">
+                  {balanceError || "Balance unavailable"}
+                </p>
+              )}
+            </div>
+
             <p className="mb-2 text-xs font-medium text-muted-foreground">
               Agent mode
             </p>
@@ -144,6 +228,40 @@ export function SettingsPopover({
                 Allow agent to execute
                 <span className="mt-0.5 block text-[10px] text-muted-foreground">
                   Agent may sign after preparing calldata
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={async () => {
+                  setSaving(true)
+                  setError(null)
+                  try {
+                    const token = await getAccessToken()
+                    if (!token) throw new Error("Not authenticated")
+                    const res = await fetch("/api/missions", {
+                      method: "POST",
+                      headers: {
+                        Authorization: `Bearer ${token}`,
+                        "Content-Type": "application/json",
+                      },
+                      body: JSON.stringify({
+                        action: "kill_switch",
+                        killSwitch: true,
+                      }),
+                    })
+                    if (!res.ok) throw new Error("Failed to engage kill switch")
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Kill switch failed")
+                  } finally {
+                    setSaving(false)
+                  }
+                }}
+                className="w-full rounded-lg border border-destructive/40 px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+              >
+                Kill switch — pause all missions
+                <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                  Immediately pauses autonomous activity
                 </span>
               </button>
             </div>

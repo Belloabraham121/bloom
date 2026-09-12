@@ -1,0 +1,165 @@
+/**
+ * Pub/sub + recent buffer for market ticks, agent events, and canvas patches.
+ */
+
+import { ensureRedisConnected, getRedis, getRedisSubscriber } from "@/server/services/redis/client"
+
+export type MarketEvent = {
+  type: "market"
+  chainId: number
+  pool?: string
+  token0?: string
+  token1?: string
+  symbol0?: string
+  symbol1?: string
+  amount0?: string
+  amount1?: string
+  price?: string
+  block?: number
+  tx?: string
+  at: string
+}
+
+export type AgentEventStep =
+  | "signal"
+  | "deciding"
+  | "quoting"
+  | "signing"
+  | "submitted"
+  | "confirmed"
+  | "failed"
+  | "canvas_patch"
+  | "status"
+
+export type AgentEvent = {
+  type: "agent"
+  userId: string
+  missionId?: string
+  step: AgentEventStep
+  message: string
+  payload?: Record<string, unknown>
+  at: string
+}
+
+export type CanvasPatch = {
+  type: "canvas_patch"
+  userId: string
+  conversationId?: string | null
+  op: "set" | "replace" | "insert" | "remove" | "full"
+  widgetId?: string
+  path?: string
+  data?: unknown
+  at: string
+}
+
+export type BusMessage = MarketEvent | AgentEvent | CanvasPatch
+
+function marketChannel(chainId: number) {
+  return `bloom:market:${chainId}`
+}
+
+function agentChannel(userId: string) {
+  return `bloom:agent:${userId}`
+}
+
+function recentKey(channel: string) {
+  return `bloom:recent:${channel}`
+}
+
+async function publish(channel: string, message: BusMessage) {
+  const redis = getRedis()
+  await ensureRedisConnected(redis)
+  const raw = JSON.stringify(message)
+  await redis.publish(channel, raw)
+  await redis.lpush(recentKey(channel), raw)
+  await redis.ltrim(recentKey(channel), 0, 99)
+}
+
+export async function publishMarketEvent(event: Omit<MarketEvent, "type" | "at"> & { at?: string }) {
+  const full: MarketEvent = {
+    type: "market",
+    at: event.at ?? new Date().toISOString(),
+    ...event,
+  }
+  await publish(marketChannel(event.chainId), full)
+  return full
+}
+
+export async function publishAgentEvent(
+  event: Omit<AgentEvent, "type" | "at"> & { at?: string }
+) {
+  const full: AgentEvent = {
+    type: "agent",
+    at: event.at ?? new Date().toISOString(),
+    ...event,
+  }
+  await publish(agentChannel(event.userId), full)
+  return full
+}
+
+export async function publishCanvasPatch(
+  patch: Omit<CanvasPatch, "type" | "at"> & { at?: string }
+) {
+  const full: CanvasPatch = {
+    type: "canvas_patch",
+    at: patch.at ?? new Date().toISOString(),
+    ...patch,
+  }
+  await publish(agentChannel(patch.userId), full)
+  return full
+}
+
+export async function getRecentMessages(channel: string, limit = 30): Promise<BusMessage[]> {
+  const redis = getRedis()
+  await ensureRedisConnected(redis)
+  const rows = await redis.lrange(recentKey(channel), 0, limit - 1)
+  return rows
+    .map((r) => {
+      try {
+        return JSON.parse(r) as BusMessage
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean) as BusMessage[]
+}
+
+export async function getRecentMarketEvents(chainId: number, limit = 30) {
+  return (await getRecentMessages(marketChannel(chainId), limit)).filter(
+    (m): m is MarketEvent => m.type === "market"
+  )
+}
+
+export async function getRecentAgentEvents(userId: string, limit = 30) {
+  return getRecentMessages(agentChannel(userId), limit)
+}
+
+/**
+ * Subscribe to channels; returns unsubscribe fn.
+ * Handler is called for each message (and optionally primed with recent).
+ */
+export async function subscribeChannels(
+  channels: string[],
+  onMessage: (channel: string, message: BusMessage) => void
+): Promise<() => Promise<void>> {
+  const sub = getRedisSubscriber()
+  await ensureRedisConnected(sub)
+
+  const handler = (channel: string, raw: string) => {
+    try {
+      onMessage(channel, JSON.parse(raw) as BusMessage)
+    } catch {
+      /* ignore bad payloads */
+    }
+  }
+
+  sub.on("message", handler)
+  if (channels.length) await sub.subscribe(...channels)
+
+  return async () => {
+    sub.off("message", handler)
+    if (channels.length) await sub.unsubscribe(...channels)
+  }
+}
+
+export { marketChannel, agentChannel }

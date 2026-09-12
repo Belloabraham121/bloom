@@ -9,6 +9,10 @@ import {
   openuiPromptOptions,
 } from "@openuidev/react-ui/genui-lib"
 import { z } from "zod/v4"
+import { useLiveFeed } from "@/components/chat/live-feed-context"
+import { AnimatedOrb } from "@/components/chat/animated-orb"
+import { Button } from "@/components/ui/button"
+import { Pause, Play, Square } from "lucide-react"
 
 function CardShell({
   title,
@@ -18,7 +22,7 @@ function CardShell({
   children: ReactNode
 }) {
   return (
-    <div className="my-2 w-full max-w-lg rounded-xl border border-border bg-card/80 p-4 text-card-foreground shadow-sm">
+    <div className="my-2 w-full rounded-xl border border-border bg-card/80 p-4 text-card-foreground shadow-sm">
       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         {title}
       </div>
@@ -43,17 +47,40 @@ const MessageText = defineComponent({
 
 const TokenRow = defineComponent({
   name: "TokenRow",
-  description: "One token row: symbol, name, optional contract address.",
+  description:
+    "One token row: symbol, name, optional contract address and logoUrl (Uniswap or CoinGecko).",
   props: z.object({
     symbol: z.string(),
     name: z.string(),
     address: z.string().optional(),
+    logoUrl: z.string().optional(),
   }),
   component: ({ props }) => (
-    <div className="flex items-start justify-between gap-3 border-b border-border/60 py-2 last:border-0">
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-foreground">{props.symbol}</p>
-        <p className="truncate text-xs text-muted-foreground">{props.name}</p>
+    <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2 last:border-0">
+      <div className="flex min-w-0 items-center gap-3">
+        {props.logoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={props.logoUrl}
+            alt=""
+            width={28}
+            height={28}
+            className="h-7 w-7 shrink-0 rounded-full bg-muted object-cover"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground"
+            aria-hidden
+          >
+            {props.symbol.slice(0, 2).toUpperCase()}
+          </div>
+        )}
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">{props.symbol}</p>
+          <p className="truncate text-xs text-muted-foreground">{props.name}</p>
+        </div>
       </div>
       {props.address && (
         <p className="max-w-[9rem] shrink-0 truncate font-mono text-[10px] text-muted-foreground">
@@ -359,6 +386,204 @@ const Root = defineComponent({
   ),
 })
 
+function LiveActivityView({ title }: { title?: string }) {
+  const { liveActive, working, events, missionAction } = useLiveFeed()
+  const latest = events[0]
+  return (
+    <CardShell title={title || "Live agent activity"}>
+      {!liveActive ? (
+        <p className="text-xs text-muted-foreground">
+          Live session inactive — call start_market_watch when the user asks for
+          real-time data.
+        </p>
+      ) : (
+        <>
+          <div className="mb-2 flex items-center gap-2">
+            <AnimatedOrb size={22} />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-foreground">
+                {working ? "Agent working" : "Agent idle"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {latest?.message || "Waiting for signals…"}
+              </p>
+            </div>
+            <div className="flex gap-1">
+              {working ? (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => void missionAction("pause")}
+                  aria-label="Pause"
+                >
+                  <Pause className="h-3.5 w-3.5" />
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => void missionAction("resume")}
+                  aria-label="Resume"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={() => void missionAction("stop")}
+                aria-label="Stop"
+              >
+                <Square className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="max-h-28 space-y-1 overflow-y-auto">
+            {events.slice(0, 12).map((e, i) => (
+              <div
+                key={`${e.at}-${i}`}
+                className="flex gap-2 text-[10px] text-muted-foreground"
+              >
+                <span className="shrink-0 font-mono text-foreground/70">
+                  {e.step}
+                </span>
+                <span className="truncate">{e.message}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </CardShell>
+  )
+}
+
+const LiveActivity = defineComponent({
+  name: "LiveActivity",
+  description:
+    "Real-time agent activity panel (steps: quoting/signing/submitted). ONLY after start_market_watch or start_mission when the user asked for live/real-time. Not fixed chrome — place in Stack when live UI is needed.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <LiveActivityView title={props.title} />,
+})
+
+function LiveTradeTapeView({ title }: { title?: string }) {
+  const { liveActive, tapeRows } = useLiveFeed()
+  return (
+    <CardShell title={title || "Live trade tape"}>
+      {!liveActive ? (
+        <p className="text-xs text-muted-foreground">No live session.</p>
+      ) : tapeRows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Waiting for trades…</p>
+      ) : (
+        <div className="max-h-40 overflow-y-auto">
+          {tapeRows.map((row) => (
+            <div
+              key={row.id}
+              className="flex items-center gap-2 border-b border-border/30 py-1.5 text-[11px] last:border-0"
+            >
+              <span className="rounded bg-muted px-1.5 py-0.5 font-medium">
+                {row.side || "swap"}
+              </span>
+              <span className="text-muted-foreground">{row.status}</span>
+              {row.txHash && (
+                <a
+                  href={`https://etherscan.io/tx/${row.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ml-auto font-mono text-[10px] text-primary hover:underline"
+                >
+                  {row.txHash.slice(0, 10)}…
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+const LiveTradeTape = defineComponent({
+  name: "LiveTradeTape",
+  description:
+    "Scrolling live trade tape of agent swaps/LP. Emit only after start_market_watch / start_mission for real-time views.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <LiveTradeTapeView title={props.title} />,
+})
+
+function LiveMarketTickView({ title }: { title?: string }) {
+  const { liveActive, lastTick } = useLiveFeed()
+  return (
+    <CardShell title={title || "Live market tick"}>
+      {!liveActive || !lastTick ? (
+        <p className="text-xs text-muted-foreground">
+          {liveActive ? "Waiting for ticks…" : "No live session."}
+        </p>
+      ) : (
+        <p className="text-sm text-foreground">
+          {String(lastTick.symbol0 || "")}/{String(lastTick.symbol1 || "")} ·{" "}
+          {String(lastTick.price || "—")}
+          {lastTick.pool ? (
+            <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground">
+              {String(lastTick.pool)}
+            </span>
+          ) : null}
+        </p>
+      )}
+    </CardShell>
+  )
+}
+
+const LiveMarketTick = defineComponent({
+  name: "LiveMarketTick",
+  description:
+    "Latest live pool/price tick from the market bus. Use after start_market_watch when user wants real-time prices.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <LiveMarketTickView title={props.title} />,
+})
+
+function InflightTradeView({ title }: { title?: string }) {
+  const { events, liveActive } = useLiveFeed()
+  const inflight = events.find((e) =>
+    ["quoting", "signing", "submitted", "deciding"].includes(e.step)
+  )
+  return (
+    <CardShell title={title || "In-flight trade"}>
+      {!liveActive ? (
+        <p className="text-xs text-muted-foreground">No live session.</p>
+      ) : !inflight ? (
+        <p className="text-xs text-muted-foreground">No trade in flight.</p>
+      ) : (
+        <>
+          <p className="text-sm capitalize text-foreground">{inflight.step}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{inflight.message}</p>
+        </>
+      )}
+    </CardShell>
+  )
+}
+
+const InflightTrade = defineComponent({
+  name: "InflightTrade",
+  description:
+    "Single in-flight trade card (quoting → signing → submitted). Include in live Stack after start_mission / start_market_watch.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <InflightTradeView title={props.title} />,
+})
+
 const TRADING_COMPONENTS = [
   MessageText,
   TokenRow,
@@ -374,6 +599,10 @@ const TRADING_COMPONENTS = [
   ChainedPlanCard,
   LpPositionCard,
   PoolTelemetry,
+  LiveActivity,
+  LiveTradeTape,
+  LiveMarketTick,
+  InflightTrade,
   Root,
 ] as const
 
@@ -382,8 +611,9 @@ const tradingComponentGroup: ComponentGroup = {
   components: TRADING_COMPONENTS.map((c) => c.name),
   notes: [
     "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
+    "- Real-time ONLY when user asks: start_market_watch then emit LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade in Stack.",
+    "- Never assume live chrome exists outside OpenUI — the model must place Live* components.",
     "- Token discovery → TokenList + TokenRow. Chains → ChainList + ChainRow.",
-    "- After get_pool_telemetry / get_top_pools → PoolTelemetry (and/or Table / BarChart for comparisons).",
     "- Prefer Button with Action([@ToAssistant(\"...\")]) for confirm / follow-up clicks.",
   ],
 }
@@ -398,6 +628,13 @@ caption = TextContent("Quote ready", "large-heavy")
 quote = QuoteSummary("USDC", "WETH", "100", "0.04", "CLASSIC", "1.20", "Ethereum")
 cost = CostBreakdown("1.20")
 confirm = ConfirmTx("Confirm swap", "Swap 100 USDC for ~0.04 WETH on Ethereum", null, true)`,
+    `Example — live real-time terminal (after start_market_watch):
+
+root = Stack([title, activity, tick, tape])
+title = TextContent("Live USDC/ETH", "large-heavy")
+activity = LiveActivity("Agent activity")
+tick = LiveMarketTick("Last tick")
+tape = LiveTradeTape("Trades")`,
     `Example — Pool TVL table + chart:
 
 root = Stack([title, tbl, chart])
@@ -411,6 +648,8 @@ s1 = Series("TVL", tvls)`,
   additionalRules: [
     ...(openuiPromptOptions.additionalRules ?? []),
     "Every program must start with root = Stack([...]). Do not use Root(...).",
+    "Live UI must be OpenUI LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade — never assume fixed chat chrome.",
+    "Only after start_market_watch or start_mission when the user asked for real-time.",
     "For Uniswap trading flows prefer Trading components (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry, etc.).",
     "For comparisons and analytics use Table, BarChart, LineChart, PieChart, etc.",
     "Buttons: use Button / Buttons with Action([@ToAssistant(\"message\")]) or @OpenUrl(\"https://...\").",

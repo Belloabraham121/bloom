@@ -31,8 +31,12 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${geist.variable} ${geistMono.variable} ${playfair.variable}`}>
-      <body className="font-sans antialiased">
+    <html
+      lang="en"
+      className={`${geist.variable} ${geistMono.variable} ${playfair.variable}`}
+      suppressHydrationWarning
+    >
+      <body className="font-sans antialiased" suppressHydrationWarning>
         <PrivyAuthProvider>{children}</PrivyAuthProvider>
       </body>
     </html>

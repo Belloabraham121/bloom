@@ -138,6 +138,7 @@ function formatUpstreamError(error: unknown): string {
 
 /**
  * Thesys Embed Chat Completions via the official OpenAI SDK.
+ * Final OpenUI Lang is streamed token-by-token; tool rounds stay buffered.
  */
 export async function runChatTurnAsResponse(
   input: ChatTurnInput
@@ -164,42 +165,117 @@ export async function runChatTurnAsResponse(
 
   const encoder = new TextEncoder()
   let produced = ""
+  let cancelled = false
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let closed = false
+
       const enqueue = (text: string) => {
-        if (!text) return
-        produced += text
-        controller.enqueue(encoder.encode(text))
+        if (!text || closed || cancelled) return
+        try {
+          produced += text
+          controller.enqueue(encoder.encode(text))
+        } catch {
+          closed = true
+        }
       }
+
+      const close = () => {
+        if (closed) return
+        closed = true
+        try {
+          controller.close()
+        } catch {
+          // already closed/cancelled
+        }
+      }
+
+      const stopped = () => closed || cancelled
 
       try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          if (stopped()) return
+
           const completion = await client.chat.completions.create({
             model: modelId,
             messages,
             ...(skipTools
               ? {}
               : { tools, tool_choice: "auto" as const }),
-            stream: false,
+            stream: true,
           })
 
-          const choice = completion.choices[0]
-          const msg = choice?.message
-          if (!msg) {
-            throw new Error("Thesys returned an empty completion")
+          let content = ""
+          let finishReason: string | null | undefined
+          const toolCallBuilders = new Map<
+            number,
+            {
+              id: string
+              type: "function"
+              function: { name: string; arguments: string }
+            }
+          >()
+
+          for await (const chunk of completion) {
+            if (stopped()) return
+
+            const choice = chunk.choices[0]
+            if (!choice) continue
+            finishReason = choice.finish_reason ?? finishReason
+            const delta = choice.delta
+
+            if (delta?.tool_calls?.length) {
+              for (const part of delta.tool_calls) {
+                const index = part.index ?? 0
+                const existing = toolCallBuilders.get(index)
+                if (!existing) {
+                  toolCallBuilders.set(index, {
+                    id: part.id || `tool_${index}`,
+                    type: "function",
+                    function: {
+                      name: part.function?.name || "",
+                      arguments: part.function?.arguments || "",
+                    },
+                  })
+                } else {
+                  if (part.id) existing.id = part.id
+                  if (part.function?.name) {
+                    existing.function.name += part.function.name
+                  }
+                  if (part.function?.arguments) {
+                    existing.function.arguments += part.function.arguments
+                  }
+                }
+              }
+              continue
+            }
+
+            const piece = delta?.content
+            if (piece) {
+              content += piece
+              // Stream OpenUI Lang live when this chunk is not a tool-call turn.
+              if (toolCallBuilders.size === 0) {
+                enqueue(piece)
+              }
+            }
           }
 
-          const toolCalls = msg.tool_calls ?? []
+          if (stopped()) return
+
+          const toolCalls = [...toolCallBuilders.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([, call]) => call)
+            .filter((call) => call.function.name)
+
           if (toolCalls.length > 0) {
             messages.push({
               role: "assistant",
-              content: msg.content ?? null,
+              content: content || null,
               tool_calls: toolCalls,
             })
 
             for (const call of toolCalls) {
-              if (call.type !== "function") continue
               const name = call.function.name
               const handler = handlers[name]
               let args: unknown = {}
@@ -236,46 +312,45 @@ export async function runChatTurnAsResponse(
             continue
           }
 
-          const text = (msg.content || "").trim()
-          if (text) {
-            enqueue(text)
-          } else {
+          if (!content.trim()) {
             console.warn("[chat] Thesys returned empty content", {
-              finishReason: choice.finish_reason,
-              model: completion.model,
-              usage: completion.usage,
+              finishReason,
+              model: modelId,
             })
-            enqueue(
-              "No reply text was returned from the model. Please try again."
-            )
+            if (!produced.trim()) {
+              enqueue(
+                "No reply text was returned from the model. Please try again."
+              )
+            }
           }
-          controller.close()
+          close()
           return
         }
 
         enqueue(
           "I hit the tool-call limit before finishing. Please try a simpler request."
         )
-        controller.close()
+        close()
       } catch (error) {
+        if (stopped()) return
         console.error("[chat] Thesys chat error:", error)
         const detail = formatUpstreamError(error)
-        try {
-          if (!produced.trim()) enqueue(detail)
-          else enqueue(`\n\n${detail}`)
-          controller.close()
-        } catch {
-          controller.error(error)
-        }
+        if (!produced.trim()) enqueue(detail)
+        else enqueue(`\n\n${detail}`)
+        close()
       }
+    },
+    cancel() {
+      cancelled = true
     },
   })
 
   return new Response(stream, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-cache",
-      "X-Bloom-Chat": "thesys-openai-sdk",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Bloom-Chat": "thesys-openai-sdk-stream",
     },
   })
 }

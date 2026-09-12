@@ -11,6 +11,17 @@ import {
   type UniswapVersion,
 } from "@/server/services/subgraph/client"
 import { resolveExecutionPath } from "@/server/services/uniswap/routing"
+import {
+  attachTokenLogos,
+  normalizeTradingApiTokens,
+} from "@/server/services/uniswap/token-logos"
+import {
+  formatBalanceDisplay,
+  getWalletBalance,
+} from "@/server/services/wallet/balance"
+import { db } from "@/server/services/db/client"
+import { wallets } from "@/server/services/db/schema"
+import { eq } from "drizzle-orm"
 
 export type ToolContext = {
   userId: string
@@ -357,17 +368,52 @@ export function createTradingToolHandlers(
       },
     },
 
+    get_wallet_balance: {
+      description:
+        "Get the signed-in user's wallet native + USDC balances for a chain (default Ethereum). Use when the user asks about their balance.",
+      parameters: z.object({
+        chainId: z.number().optional(),
+        address: z.string().optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as { chainId?: number; address?: string }
+        let address = q.address?.trim()
+        if (!address) {
+          const wallet = await db.query.wallets.findFirst({
+            where: eq(wallets.userId, ctx.userId),
+          })
+          address = wallet?.address
+        }
+        if (!address) {
+          return { error: "No wallet linked to this account yet." }
+        }
+        const balance = await getWalletBalance({
+          address,
+          chainId: q.chainId ?? 1,
+        })
+        return {
+          ...balance,
+          nativeDisplay: `${formatBalanceDisplay(balance.native.formatted)} ${balance.native.symbol}`,
+          usdcDisplay: balance.usdc
+            ? `${formatBalanceDisplay(balance.usdc.formatted, 2)} USDC`
+            : null,
+        }
+      },
+    },
+
     get_bridgable_tokens: {
-      description: "List bridgable / swappable tokens",
+      description:
+        "List bridgable / swappable tokens (logoUrl from Uniswap, filled via CoinGecko when missing)",
       parameters: z.object({
         chainId: z.number().optional(),
       }),
       execute: async (args) => {
         const { chainId } = asObject(args) as { chainId?: number }
-        return tradeClient.swappableTokens(
+        const data = await tradeClient.swappableTokens(
           chainId ? { chainId } : undefined,
           origin(ctx)
         )
+        return normalizeTradingApiTokens(data, chainId)
       },
     },
 
@@ -378,20 +424,23 @@ export function createTradingToolHandlers(
     },
 
     get_tokens: {
-      description: "Search or list tokens from Uniswap Trading API",
+      description:
+        "Search or list tokens from Uniswap Trading API (logoUrl from Uniswap + CoinGecko fill)",
       parameters: z.object({
         chainId: z.number().optional(),
         search: z.string().optional(),
       }),
       execute: async (args) => {
         const q = asObject(args)
-        return tradeClient.tokens(
+        const chainId = typeof q.chainId === "number" ? q.chainId : undefined
+        const data = await tradeClient.tokens(
           {
-            chainId: typeof q.chainId === "number" ? q.chainId : undefined,
+            chainId,
             search: typeof q.search === "string" ? q.search : undefined,
           },
           origin(ctx)
         )
+        return normalizeTradingApiTokens(data, chainId)
       },
     },
 
@@ -422,7 +471,7 @@ export function createTradingToolHandlers(
 
     get_tokens_in_pools: {
       description:
-        "Live tokens that appear in top Uniswap pools for a version+chain (The Graph). Use for pool-token discovery across V2/V3/V4 — not Trading API token search.",
+        "Live tokens in top Uniswap pools (The Graph) with logoUrl from Uniswap, filled via CoinGecko when missing. Pass version + chainId.",
       parameters: z.object({
         version: z.enum(["v2", "v3", "v4"]).optional(),
         chainId: z.number().optional(),
@@ -436,7 +485,13 @@ export function createTradingToolHandlers(
           first?: number
           search?: string
         }
-        return getTokensInPools(q)
+        const result = await getTokensInPools(q)
+        const tokens = await attachTokenLogos(
+          result.chainId,
+          result.tokens,
+          origin(ctx)
+        )
+        return { ...result, tokens }
       },
     },
 
@@ -477,6 +532,335 @@ export function createTradingToolHandlers(
           variables?: Record<string, unknown>
         }
         return runSubgraphQuery(q)
+      },
+    },
+
+    patch_canvas: {
+      description:
+        "Patch one canvas widget (set/replace/insert/remove). Prefer this over regenerating full OpenUI for small updates.",
+      parameters: z.object({
+        op: z.enum(["set", "replace", "insert", "remove", "full"]),
+        widgetId: z.string().optional(),
+        path: z.string().optional(),
+        kind: z
+          .enum([
+            "header",
+            "pool_table",
+            "volume_chart",
+            "wallet_balance",
+            "inflight_trade",
+            "trade_tape",
+            "openui",
+            "custom",
+          ])
+          .optional(),
+        data: z.unknown().optional(),
+      }),
+      execute: async (args) => {
+        const patch = asObject(args) as {
+          op: "set" | "replace" | "insert" | "remove" | "full"
+          widgetId?: string
+          path?: string
+          kind?: import("@/server/services/canvas/model").WidgetKind
+          data?: unknown
+        }
+        const { patchCanvasForUser } = await import(
+          "@/server/services/canvas/store"
+        )
+        const canvas = await patchCanvasForUser({
+          userId: ctx.userId,
+          conversationId: ctx.conversationId,
+          patch,
+        })
+        return { ok: true, revision: canvas.revision, layout: canvas.layout }
+      },
+    },
+
+    create_mission: {
+      description:
+        "Create a mission: watch | swap_dca | range_lp | arb_scan. Does not start until start_mission.",
+      parameters: z.object({
+        strategy: z.enum(["watch", "swap_dca", "range_lp", "arb_scan"]),
+        params: z.record(z.string(), z.unknown()).optional(),
+        guardrails: z.record(z.string(), z.unknown()).optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as {
+          strategy: "watch" | "swap_dca" | "range_lp" | "arb_scan"
+          params?: Record<string, unknown>
+          guardrails?: Record<string, unknown>
+        }
+        const { createMission } = await import(
+          "@/server/services/missions/repo"
+        )
+        const mission = await createMission({
+          userId: ctx.userId,
+          conversationId: ctx.conversationId,
+          strategy: q.strategy,
+          params: q.params,
+          guardrails: q.guardrails,
+        })
+        return { mission }
+      },
+    },
+
+    start_mission: {
+      description: "Start a draft/paused mission so the agent works in the background",
+      parameters: z.object({ missionId: z.string() }),
+      execute: async (args) => {
+        const { missionId } = asObject(args) as { missionId: string }
+        const { updateMission, getMission } = await import(
+          "@/server/services/missions/repo"
+        )
+        const { kickMission } = await import(
+          "@/server/services/missions/runner"
+        )
+        const { ensureLiveIngest } = await import(
+          "@/server/services/market/ingest"
+        )
+        const { startLiveSession } = await import(
+          "@/server/services/market/live-session"
+        )
+        const existing = await getMission(missionId, ctx.userId)
+        const chainId =
+          typeof (existing?.params as { chainId?: number } | null)?.chainId ===
+          "number"
+            ? (existing!.params as { chainId: number }).chainId
+            : 1
+        ensureLiveIngest({ chainId })
+        await startLiveSession({
+          userId: ctx.userId,
+          conversationId: ctx.conversationId ?? null,
+          chainId,
+          purpose: String(existing?.strategy || "mission"),
+          missionId,
+          startedAt: new Date().toISOString(),
+        })
+        const mission = await updateMission(missionId, ctx.userId, {
+          status: "running",
+          lastError: null,
+          lastActivityAt: new Date(),
+        })
+        await kickMission(missionId, ctx.userId)
+        return {
+          mission,
+          liveActive: true,
+          openuiHint:
+            "Emit OpenUI Stack including LiveActivity, LiveMarketTick, LiveTradeTape, and/or InflightTrade — do not rely on fixed chrome.",
+        }
+      },
+    },
+
+    pause_mission: {
+      description: "Pause a running mission",
+      parameters: z.object({ missionId: z.string() }),
+      execute: async (args) => {
+        const { missionId } = asObject(args) as { missionId: string }
+        const { updateMission } = await import(
+          "@/server/services/missions/repo"
+        )
+        return {
+          mission: await updateMission(missionId, ctx.userId, {
+            status: "paused",
+          }),
+        }
+      },
+    },
+
+    stop_mission: {
+      description: "Stop a mission and end the live real-time session UI",
+      parameters: z.object({ missionId: z.string() }),
+      execute: async (args) => {
+        const { missionId } = asObject(args) as { missionId: string }
+        const { updateMission } = await import(
+          "@/server/services/missions/repo"
+        )
+        const { stopLiveSession } = await import(
+          "@/server/services/market/live-session"
+        )
+        const mission = await updateMission(missionId, ctx.userId, {
+          status: "stopped",
+        })
+        await stopLiveSession(ctx.userId)
+        return { mission, liveActive: false }
+      },
+    },
+
+    start_market_watch: {
+      description:
+        "ONLY when the user asks for real-time / live market data. Starts live SSE session. After this tool, you MUST emit OpenUI with LiveActivity / LiveMarketTick / LiveTradeTape (not fixed chrome). Do not call on every chat.",
+      parameters: z.object({
+        chainId: z.number().optional(),
+        purpose: z.string().optional(),
+        symbol0: z.string().optional(),
+        symbol1: z.string().optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as {
+          chainId?: number
+          purpose?: string
+          symbol0?: string
+          symbol1?: string
+        }
+        const chainId = q.chainId ?? 1
+        const { ensureLiveIngest } = await import(
+          "@/server/services/market/ingest"
+        )
+        const { startLiveSession } = await import(
+          "@/server/services/market/live-session"
+        )
+        const { publishAgentEvent } = await import(
+          "@/server/services/market/bus"
+        )
+        const { createMission, updateMission } = await import(
+          "@/server/services/missions/repo"
+        )
+        const { kickMission } = await import(
+          "@/server/services/missions/runner"
+        )
+
+        ensureLiveIngest({ chainId })
+        const mission = await createMission({
+          userId: ctx.userId,
+          conversationId: ctx.conversationId,
+          strategy: "watch",
+          params: {
+            chainId,
+            symbol0: q.symbol0,
+            symbol1: q.symbol1,
+          },
+          status: "draft",
+        })
+        await updateMission(mission.id, ctx.userId, {
+          status: "running",
+          lastActivityAt: new Date(),
+        })
+        await startLiveSession({
+          userId: ctx.userId,
+          conversationId: ctx.conversationId ?? null,
+          chainId,
+          purpose: q.purpose || "market_watch",
+          missionId: mission.id,
+          startedAt: new Date().toISOString(),
+        })
+        await kickMission(mission.id, ctx.userId)
+        await publishAgentEvent({
+          userId: ctx.userId,
+          missionId: mission.id,
+          step: "status",
+          message: q.purpose
+            ? `Live watch started — ${q.purpose}`
+            : "Live market watch started",
+        })
+        return {
+          liveActive: true,
+          missionId: mission.id,
+          chainId,
+          openuiHint:
+            "REQUIRED: respond with OpenUI Stack including LiveActivity, LiveMarketTick, LiveTradeTape (and InflightTrade if trading). Example: root = Stack([title, activity, tick, tape])",
+        }
+      },
+    },
+
+    stop_market_watch: {
+      description:
+        "Stop real-time market watch / live SSE session. After this, omit Live* components from OpenUI or note that live is off.",
+      parameters: z.object({}),
+      execute: async () => {
+        const { stopLiveSession } = await import(
+          "@/server/services/market/live-session"
+        )
+        const { listMissionsForUser, updateMission } = await import(
+          "@/server/services/missions/repo"
+        )
+        const { publishAgentEvent } = await import(
+          "@/server/services/market/bus"
+        )
+        await stopLiveSession(ctx.userId)
+        const missions = await listMissionsForUser(ctx.userId, 20)
+        for (const m of missions) {
+          if (m.status === "running" && m.strategy === "watch") {
+            await updateMission(m.id, ctx.userId, { status: "stopped" })
+          }
+        }
+        await publishAgentEvent({
+          userId: ctx.userId,
+          step: "status",
+          message: "Live market watch stopped",
+        })
+        return { liveActive: false }
+      },
+    },
+
+    get_mission_status: {
+      description: "List missions or get one by id",
+      parameters: z.object({ missionId: z.string().optional() }),
+      execute: async (args) => {
+        const { missionId } = asObject(args) as { missionId?: string }
+        const { getMission, listMissionsForUser } = await import(
+          "@/server/services/missions/repo"
+        )
+        if (missionId) {
+          return { mission: await getMission(missionId, ctx.userId) }
+        }
+        return { missions: await listMissionsForUser(ctx.userId) }
+      },
+    },
+
+    get_recent_market_events: {
+      description: "Recent live market ticks from Substreams/poller bus",
+      parameters: z.object({
+        chainId: z.number().optional(),
+        limit: z.number().optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as { chainId?: number; limit?: number }
+        const { getRecentMarketEvents } = await import(
+          "@/server/services/market/bus"
+        )
+        return {
+          events: await getRecentMarketEvents(q.chainId ?? 1, q.limit ?? 20),
+        }
+      },
+    },
+
+    execute_prepared_tx: {
+      description:
+        "Broadcast a prepared Uniswap tx via Privy. Autonomous mode required unless user confirmed.",
+      parameters: z.object({
+        chainId: z.number(),
+        to: z.string(),
+        data: z.string(),
+        value: z.string().optional(),
+        category: z.string().optional(),
+        responsePayload: z.unknown().optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as {
+          chainId: number
+          to: string
+          data: string
+          value?: string
+          category?: string
+          responsePayload?: unknown
+        }
+        const { executePreparedTx } = await import(
+          "@/server/services/wallet/executor"
+        )
+        return executePreparedTx({
+          userId: ctx.userId,
+          agentMode: ctx.decisionOrigin,
+          requireAutonomous: ctx.decisionOrigin === "autonomous",
+          prepared: {
+            chainId: q.chainId,
+            to: q.to,
+            data: q.data,
+            value: q.value,
+            category: q.category,
+            responsePayload: q.responsePayload,
+            conversationId: ctx.conversationId,
+          },
+        })
       },
     },
   }

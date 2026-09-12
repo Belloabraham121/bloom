@@ -34,6 +34,8 @@ interface ComposerProps {
   disabled?: boolean
   selectedModel: AIModel
   onModelChange: (model: AIModel) => void
+  /** Canvas-first shell puts the chat bar at the top */
+  placement?: "top" | "bottom"
 }
 
 export function Composer({
@@ -43,6 +45,7 @@ export function Composer({
   disabled,
   selectedModel,
   onModelChange,
+  placement = "bottom",
 }: ComposerProps) {
   const [value, setValue] = useState("")
   const [isRecording, setIsRecording] = useState(false)
@@ -182,14 +185,14 @@ export function Composer({
   return (
     <div
       className={cn(
-        "pointer-events-none fixed bottom-4 left-0 right-0 z-10 px-4",
+        "pointer-events-none relative z-10 w-full px-4",
         hasAnimated && "composer-intro"
       )}
     >
       <div className="pointer-events-auto relative mx-auto max-w-2xl">
         <div
           className={cn(
-            "relative flex flex-col gap-3 overflow-hidden rounded-3xl border border-border bg-card p-4 transition-all duration-200",
+            "relative flex flex-col gap-3 overflow-hidden rounded-3xl border border-border bg-card/95 p-4 shadow-sm backdrop-blur-md transition-all duration-200",
             "focus-within:ring-2 focus-within:ring-ring/40"
           )}
         >
@@ -323,7 +326,7 @@ export function Composer({
               <DropdownMenuPortal>
                 <DropdownMenuContent
                   align="start"
-                  side="top"
+                  side={placement === "top" ? "bottom" : "top"}
                   sideOffset={8}
                   className="z-[9999] w-40 rounded-2xl border-border bg-card px-2 py-2"
                 >

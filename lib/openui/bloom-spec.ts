@@ -1,19 +1,17 @@
 /**
  * Server-safe library spec for OpenUI Gateway prompting.
- * Must stay in sync with bloom-library.tsx (same components, root, groups, schemas).
+ * Uses a serialized OpenUI base spec (no React) + Bloom trading components.
+ * Keep trading schemas in sync with bloom-library.tsx.
  */
 import {
   createLibrary,
   defineComponent,
   type ComponentGroup,
+  type LibrarySpec,
   type PromptOptions,
 } from "@openuidev/lang-core"
-import {
-  openuiComponentGroups,
-  openuiLibrary,
-  openuiPromptOptions,
-} from "@openuidev/react-ui/genui-lib"
 import { z } from "zod/v4"
+import openuiBase from "./openui-base-spec.json"
 
 const noop = () => null
 
@@ -29,11 +27,13 @@ const MessageText = defineComponent({
 
 const TokenRow = defineComponent({
   name: "TokenRow",
-  description: "One token row: symbol, name, optional contract address.",
+  description:
+    "One token row: symbol, name, optional contract address and logoUrl (Uniswap or CoinGecko).",
   props: z.object({
     symbol: z.string(),
     name: z.string(),
     address: z.string().optional(),
+    logoUrl: z.string().optional(),
   }),
   component: noop,
 })
@@ -194,6 +194,46 @@ const Root = defineComponent({
   component: noop,
 })
 
+const LiveActivity = defineComponent({
+  name: "LiveActivity",
+  description:
+    "Real-time agent activity panel. ONLY after start_market_watch / start_mission when user asked for live data. Place in Stack — not fixed chrome.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: noop,
+})
+
+const LiveTradeTape = defineComponent({
+  name: "LiveTradeTape",
+  description:
+    "Live trade tape of agent swaps. Emit only after start_market_watch / start_mission.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: noop,
+})
+
+const LiveMarketTick = defineComponent({
+  name: "LiveMarketTick",
+  description:
+    "Latest live pool/price tick. Use after start_market_watch for real-time prices.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: noop,
+})
+
+const InflightTrade = defineComponent({
+  name: "InflightTrade",
+  description:
+    "In-flight trade card (quoting → signing → submitted). Include in live Stack.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: noop,
+})
+
 const TRADING_COMPONENTS = [
   MessageText,
   TokenRow,
@@ -209,6 +249,10 @@ const TRADING_COMPONENTS = [
   ChainedPlanCard,
   LpPositionCard,
   PoolTelemetry,
+  LiveActivity,
+  LiveTradeTape,
+  LiveMarketTick,
+  InflightTrade,
   Root,
 ]
 
@@ -217,15 +261,18 @@ const tradingComponentGroup: ComponentGroup = {
   components: TRADING_COMPONENTS.map((c) => c.name),
   notes: [
     "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
+    "- Real-time: start_market_watch then LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade in Stack.",
+    "- Never assume fixed chat chrome for live UI.",
     "- Token discovery → TokenList + TokenRow. Chains → ChainList + ChainRow.",
-    "- After get_pool_telemetry / get_top_pools → PoolTelemetry (and/or Table / BarChart for comparisons).",
     "- Prefer Button with Action([@ToAssistant(\"...\")]) for confirm / follow-up clicks.",
   ],
 }
 
+const basePromptOptions = (openuiBase.promptOptions ?? {}) as PromptOptions
+
 export const bloomPromptOptions: PromptOptions = {
   examples: [
-    ...(openuiPromptOptions.examples ?? []),
+    ...(basePromptOptions.examples ?? []),
     `Example — Uniswap quote + confirm:
 
 root = Stack([caption, quote, cost, confirm])
@@ -233,6 +280,19 @@ caption = TextContent("Quote ready", "large-heavy")
 quote = QuoteSummary("USDC", "WETH", "100", "0.04", "CLASSIC", "1.20", "Ethereum")
 cost = CostBreakdown("1.20")
 confirm = ConfirmTx("Confirm swap", "Swap 100 USDC for ~0.04 WETH on Ethereum", null, true)`,
+    `Example — live real-time (after start_market_watch):
+
+root = Stack([title, activity, tick, tape])
+title = TextContent("Live USDC/ETH", "large-heavy")
+activity = LiveActivity("Agent activity")
+tick = LiveMarketTick("Last tick")
+tape = LiveTradeTape("Trades")`,
+    `Example — tokens with logos:
+
+root = Stack([title, list])
+title = TextContent("Tokens", "large-heavy")
+list = TokenList("Ethereum", "Chain ID 1", [t1])
+t1 = TokenRow("USDC", "USD Coin", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "https://coin-images.coingecko.com/coins/images/6319/large/usdc.png")`,
     `Example — Pool TVL table + chart:
 
 root = Stack([title, tbl, chart])
@@ -244,23 +304,47 @@ chart = BarChart(pairs, [s1], "grouped")
 s1 = Series("TVL", tvls)`,
   ],
   additionalRules: [
-    ...(openuiPromptOptions.additionalRules ?? []),
+    ...(basePromptOptions.additionalRules ?? []),
     "Every program must start with root = Stack([...]). Do not use Root(...).",
+    "Live UI must be OpenUI LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade after start_market_watch — never fixed chrome.",
     "For Uniswap trading flows prefer Trading components (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry, etc.).",
+    "When a tool returns logoUrl, pass it as TokenRow's fourth argument so the icon renders.",
     "For comparisons and analytics use Table, BarChart, LineChart, PieChart, etc.",
     "Buttons: use Button / Buttons with Action([@ToAssistant(\"message\")]) or @OpenUrl(\"https://...\").",
-    "Never invent token addresses or chain IDs — call tools first.",
+    "Never invent token addresses, chain IDs, or logo URLs — call tools first.",
   ],
 }
 
-const bloomLibraryServer = createLibrary({
-  id: "bloom-trading@3",
-  root: "Stack",
-  componentGroups: [...openuiComponentGroups, tradingComponentGroup],
-  components: [
-    ...Object.values(openuiLibrary.components),
-    ...TRADING_COMPONENTS,
-  ],
-})
+const tradingSpec = createLibrary({
+  id: "bloom-trading-only@3",
+  root: "MessageText",
+  components: TRADING_COMPONENTS,
+}).toSpec()
 
-export const bloomLibrarySpec = bloomLibraryServer.toSpec()
+const baseSchema = openuiBase.schema as {
+  $defs?: Record<string, unknown>
+  [key: string]: unknown
+}
+const tradingSchema = tradingSpec.schema as {
+  $defs?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export const bloomLibrarySpec = {
+  root: "Stack",
+  components: {
+    ...(openuiBase.components as LibrarySpec["components"]),
+    ...tradingSpec.components,
+  },
+  componentGroups: [
+    ...((openuiBase.componentGroups as ComponentGroup[]) ?? []),
+    tradingComponentGroup,
+  ],
+  schema: {
+    ...baseSchema,
+    $defs: {
+      ...(baseSchema.$defs ?? {}),
+      ...(tradingSchema.$defs ?? {}),
+    },
+  },
+} as LibrarySpec

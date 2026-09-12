@@ -8,7 +8,7 @@ import {
   uniqueIndex,
   uuid,
   index,
-} from "drizzle-orm/pg-core"
+} from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -16,9 +16,14 @@ export const users = pgTable("users", {
   email: text("email"),
   displayName: text("display_name"),
   agentMode: text("agent_mode").notNull().default("human_mediated"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-})
+  agentKillSwitch: boolean("agent_kill_switch").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
 
 export const wallets = pgTable(
   "wallets",
@@ -31,16 +36,18 @@ export const wallets = pgTable(
     address: text("address").notNull(),
     privyWalletId: text("privy_wallet_id"),
     isEmbedded: boolean("is_embedded").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (t) => [
     uniqueIndex("wallets_user_family_address").on(
       t.userId,
       t.chainFamily,
-      t.address
+      t.address,
     ),
-  ]
-)
+  ],
+);
 
 export const conversations = pgTable(
   "conversations",
@@ -50,11 +57,15 @@ export const conversations = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     title: text("title"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
-  (t) => [index("conversations_user_updated").on(t.userId, t.updatedAt)]
-)
+  (t) => [index("conversations_user_updated").on(t.userId, t.updatedAt)],
+);
 
 export const messages = pgTable(
   "messages",
@@ -67,10 +78,14 @@ export const messages = pgTable(
     content: text("content").notNull(),
     contentFormat: text("content_format").notNull().default("markdown"),
     model: text("model"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
-  (t) => [index("messages_conversation_created").on(t.conversationId, t.createdAt)]
-)
+  (t) => [
+    index("messages_conversation_created").on(t.conversationId, t.createdAt),
+  ],
+);
 
 export const tradeIntents = pgTable(
   "trade_intents",
@@ -101,11 +116,15 @@ export const tradeIntents = pgTable(
     networkFeeUsd: text("network_fee_usd"),
     error: text("error"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
-  (t) => [index("trade_intents_user_status").on(t.userId, t.status)]
-)
+  (t) => [index("trade_intents_user_status").on(t.userId, t.status)],
+);
 
 export const executionPlans = pgTable(
   "execution_plans",
@@ -123,11 +142,15 @@ export const executionPlans = pgTable(
     uniswapPlanId: text("uniswap_plan_id").unique(),
     status: text("status").notNull().default("created"),
     planPayload: jsonb("plan_payload"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
-  (t) => [index("execution_plans_user").on(t.userId)]
-)
+  (t) => [index("execution_plans_user").on(t.userId)],
+);
 
 export const lpActions = pgTable(
   "lp_actions",
@@ -148,11 +171,15 @@ export const lpActions = pgTable(
     status: text("status").notNull().default("proposed"),
     requestPayload: jsonb("request_payload"),
     responsePayload: jsonb("response_payload"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
-  (t) => [index("lp_actions_user").on(t.userId)]
-)
+  (t) => [index("lp_actions_user").on(t.userId)],
+);
 
 export const transactions = pgTable(
   "transactions",
@@ -173,9 +200,12 @@ export const transactions = pgTable(
     tradeIntentId: uuid("trade_intent_id").references(() => tradeIntents.id, {
       onDelete: "set null",
     }),
-    executionPlanId: uuid("execution_plan_id").references(() => executionPlans.id, {
-      onDelete: "set null",
-    }),
+    executionPlanId: uuid("execution_plan_id").references(
+      () => executionPlans.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     lpActionId: uuid("lp_action_id").references(() => lpActions.id, {
       onDelete: "set null",
     }),
@@ -198,8 +228,12 @@ export const transactions = pgTable(
     error: text("error"),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (t) => [
     index("transactions_user_created").on(t.userId, t.createdAt),
@@ -207,7 +241,39 @@ export const transactions = pgTable(
     index("transactions_order_id").on(t.uniswapOrderId),
     index("transactions_plan_id").on(t.uniswapPlanId),
     index("transactions_status").on(t.status),
-  ]
-)
+  ],
+);
 
-export type User = typeof users.$inferSelect
+/** Autonomous / watch missions driven by market signals. */
+export const missions = pgTable(
+  "missions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    strategy: text("strategy").notNull(),
+    status: text("status").notNull().default("draft"),
+    params: jsonb("params").notNull().default({}),
+    guardrails: jsonb("guardrails").notNull().default({}),
+    cursor: text("cursor"),
+    lastError: text("last_error"),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("missions_user_status").on(t.userId, t.status),
+    index("missions_strategy").on(t.strategy),
+  ],
+);
+
+export type User = typeof users.$inferSelect;
+export type Mission = typeof missions.$inferSelect;
