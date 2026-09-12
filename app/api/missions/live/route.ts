@@ -63,13 +63,27 @@ export async function GET(request: Request) {
         )
 
         // Keep ticks flowing even if background ingest died (serverless)
-        const { pollSubgraphMarketOnce } = await import(
+        const { pollMarketOnce } = await import(
           "@/server/services/substreams/poller"
         )
-        void pollSubgraphMarketOnce(chainId).catch(() => {})
+        const symbol0 =
+          session?.symbol0 ||
+          (running[0]?.params as { symbol0?: string } | null)?.symbol0 ||
+          "USDC"
+        const symbol1 =
+          session?.symbol1 ||
+          (running[0]?.params as { symbol1?: string } | null)?.symbol1 ||
+          "ETH"
+        const pollOpts = {
+          chainId,
+          symbol0,
+          symbol1,
+          userId: user.id,
+        }
+        void pollMarketOnce(pollOpts).catch(() => {})
         const pollTimer = setInterval(() => {
-          void pollSubgraphMarketOnce(chainId).catch(() => {})
-        }, 10_000)
+          void pollMarketOnce(pollOpts).catch(() => {})
+        }, 8_000)
 
         const heartbeat = setInterval(() => {
           if (closed) return

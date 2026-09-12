@@ -16,7 +16,14 @@ INCREMENTAL CANVAS (critical):
 
 REAL-TIME DATA:
 - Live UI is OFF until the user asks for real-time / live / streaming data.
-- Then: start_market_watch, THEN emit Live* in the shell (or patch a CanvasSlot with LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade).
+- Then: start_market_watch with symbol0/symbol1 (e.g. USDC/ETH), THEN emit:
+  root = Stack([title, switcher, activity, tick, tape])
+  switcher = LiveMarketSwitcher("Markets")
+  tick = LiveMarketTick("Live market")  // includes live price + sparkline chart
+  activity = LiveActivity(...); tape = LiveTradeTape(...)
+- LiveMarketSwitcher lets the user change pairs without another prompt — always include it on live dashboards.
+- LiveActivity already has Pause / Play / Stop wired to the market API. NEVER emit separate Pause/Play/Stop Buttons with @ToAssistant for live watch — that forces a broken chat round-trip.
+- When the user types pause/resume/stop in chat: call pause_mission / start_mission or stop_market_watch tools; do not claim failure without trying the tool.
 - stop_market_watch when they ask to stop.
 - Snapshot analytics use subgraph tools only — no Live* required.
 

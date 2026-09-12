@@ -114,8 +114,26 @@ export function getSlotOpenui(
  * Ensure a slot fragment is a valid OpenUI program for Renderer.
  * Accepts either a full `root = ...` program or a single expression / assignments.
  */
+function stripThesysFraming(content: string): string {
+  let text = content.replace(/\r\n/g, "\n")
+  const framed = [
+    ...text.matchAll(
+      /\]\]>openui:content[^\n]*\n([\s\S]*?)(?=\]\]>openui:content|\]\]>openui:end|$)/gi
+    ),
+  ]
+  if (framed.length > 0) {
+    const withRoot = [...framed].reverse().find((m) => /\broot\s*=/.test(m[1]))
+    text = (withRoot ?? framed[framed.length - 1])[1]
+  }
+  return text
+    .replace(/\]\]>openui:(?:content|end)[^\n]*/gi, "")
+    .replace(/^```(?:openui-lang|openui|lang)?\s*\n?/i, "")
+    .replace(/\n?```\s*$/i, "")
+    .trim()
+}
+
 export function normalizeSlotOpenui(fragment: string): string {
-  const t = fragment.trim()
+  const t = stripThesysFraming(fragment)
   if (!t) return "root = Stack([])"
   if (/^\s*root\s*=/.test(t)) return t
   return `root = Stack([__bloom_slot])\n__bloom_slot = ${t}`

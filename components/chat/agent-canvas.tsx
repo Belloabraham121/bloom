@@ -8,6 +8,7 @@ import { bloomLibrary } from "@/lib/openui/bloom-library"
 import { looksLikeOpenUI, resolveCanvasDocument } from "@/lib/openui/detect"
 import type { Message } from "./chat-shell"
 import { AnimatedOrb } from "./animated-orb"
+import { CanvasRenderGlow } from "./canvas-render-glow"
 import { TypingIndicator } from "./typing-indicator"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -107,6 +108,9 @@ export function AgentCanvas({
       lastMessage?.role === "user" ||
       (lastMessage?.role === "assistant" && lastMessage.content === ""))
 
+  const isCanvasRendering =
+    Boolean(document?.isStreaming) || waitingForCanvasUpdate || showTypingOnEmpty
+
   useEffect(() => {
     if (!isLoaded) return
     if (messages.length === 0 && !hasPlayedIntroRef.current) {
@@ -121,7 +125,7 @@ export function AgentCanvas({
   if (!isLoaded) {
     return (
       <div className="absolute inset-0 flex items-center justify-center bg-background">
-        <AnimatedOrb size={64} />
+        <AnimatedOrb size={64} glow />
       </div>
     )
   }
@@ -166,7 +170,7 @@ export function AgentCanvas({
         <div className="relative flex min-h-[calc(100dvh-10rem)] flex-col items-center justify-center">
           {showTypingOnEmpty ? (
             <div className="flex flex-col items-center gap-3">
-              <AnimatedOrb size={64} />
+              <AnimatedOrb size={64} glow />
               <TypingIndicator />
             </div>
           ) : (
@@ -180,27 +184,31 @@ export function AgentCanvas({
 
       {document && (
         <div className="relative mx-auto w-full max-w-[min(100%,72rem)]">
-          {waitingForCanvasUpdate && (
+          {(waitingForCanvasUpdate || document.isStreaming) && (
             <div className="mb-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-              <AnimatedOrb size={20} />
-              <span>Updating canvas…</span>
+              <AnimatedOrb size={20} glow />
+              <span>
+                {document.isStreaming ? "Rendering canvas…" : "Updating canvas…"}
+              </span>
             </div>
           )}
-          <section
-            key="living-canvas"
-            className="w-full min-w-0 animate-in fade-in duration-200"
-          >
-            <ThemeProvider mode="dark" cssSelector=".openui-bloom">
-              <div className="openui-bloom w-full min-w-0 [&_.recharts-responsive-container]:!w-full">
-                <Renderer
-                  library={bloomLibrary}
-                  response={document.content}
-                  isStreaming={document.isStreaming}
-                  onAction={onOpenUIAction}
-                />
-              </div>
-            </ThemeProvider>
-          </section>
+          <CanvasRenderGlow active={isCanvasRendering} className="w-full min-w-0">
+            <section
+              key="living-canvas"
+              className="w-full min-w-0 animate-in fade-in rounded-2xl duration-200"
+            >
+              <ThemeProvider mode="dark" cssSelector=".openui-bloom">
+                <div className="openui-bloom w-full min-w-0 p-1 [&_.recharts-responsive-container]:!w-full">
+                  <Renderer
+                    library={bloomLibrary}
+                    response={document.content}
+                    isStreaming={document.isStreaming}
+                    onAction={onOpenUIAction}
+                  />
+                </div>
+              </ThemeProvider>
+            </section>
+          </CanvasRenderGlow>
         </div>
       )}
 

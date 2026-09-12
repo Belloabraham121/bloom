@@ -35,6 +35,13 @@ export function useMissionLive(opts: {
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null)
   const [tapeRows, setTapeRows] = useState<TradeTapeRow[]>([])
   const [lastTick, setLastTick] = useState<Record<string, unknown> | null>(null)
+  const [tickHistory, setTickHistory] = useState<
+    import("./live-feed-context").LiveTickPoint[]
+  >([])
+  const [watchedPair, setWatchedPair] = useState<{
+    symbol0: string
+    symbol1: string
+  } | null>(null)
   const [canvasModel, setCanvasModel] = useState<ClientCanvasModel | null>(null)
   const marketEsRef = useRef<EventSource | null>(null)
   const canvasEsRef = useRef<EventSource | null>(null)
@@ -75,6 +82,13 @@ export function useMissionLive(opts: {
           if (props?.active) {
             setLiveActive(true)
             if (props.missionId) setActiveMissionId(String(props.missionId))
+            if (props.symbol0 && props.symbol1) {
+              setWatchedPair({
+                symbol0: String(props.symbol0),
+                symbol1: String(props.symbol1),
+              })
+            }
+            if (props.paused) setWorking(false)
           }
         }
       }
@@ -93,8 +107,11 @@ export function useMissionLive(opts: {
       const res = await fetch("/api/missions/live-status", {
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (res.status === 503 || res.status === 401) {
+        // Privy/network flake — keep current live UI state
+        return false
+      }
       if (!res.ok) {
-        setLiveActive(false)
         return false
       }
       const data = await res.json()
@@ -106,6 +123,13 @@ export function useMissionLive(opts: {
         setActiveMissionId(String(data.runningMissions[0].id))
         setWorking(true)
       }
+      if (data.session?.symbol0 && data.session?.symbol1) {
+        setWatchedPair({
+          symbol0: String(data.session.symbol0),
+          symbol1: String(data.session.symbol1),
+        })
+      }
+      if (data.session?.paused) setWorking(false)
       return active
     } catch {
       setLiveActive(false)
@@ -176,8 +200,16 @@ export function useMissionLive(opts: {
               setWorking(false)
             } else if (data.active) {
               setLiveActive(true)
-              setWorking(true)
+              setWorking(data.paused ? false : true)
               if (data.missionId) setActiveMissionId(String(data.missionId))
+              if (data.symbol0 && data.symbol1) {
+                setWatchedPair({
+                  symbol0: String(data.symbol0),
+                  symbol1: String(data.symbol1),
+                })
+                setTickHistory([])
+                setLastTick(null)
+              }
               void refreshLiveStatus()
             }
           }
@@ -259,7 +291,27 @@ export function useMissionLive(opts: {
               at: msg.at || new Date().toISOString(),
               missionId: msg.missionId,
             }
-            setAgentEvents((prev) => [step, ...prev].slice(0, 40))
+            setAgentEvents((prev) => {
+              // Drop duplicate status spam (e.g. repeated "Live market watch started")
+              if (
+                prev[0]?.step === step.step &&
+                prev[0]?.message === step.message
+              ) {
+                return prev
+              }
+              if (
+                step.step === "status" &&
+                prev.some((e) => e.step === "status" && e.message === step.message)
+              ) {
+                return prev
+              }
+              // Replace prior signal with same prefix (price updates)
+              if (step.step === "signal") {
+                const filtered = prev.filter((e) => e.step !== "signal")
+                return [step, ...filtered].slice(0, 40)
+              }
+              return [step, ...prev].slice(0, 40)
+            })
             if (msg.missionId) setActiveMissionId(msg.missionId)
             if (
               msg.step === "signing" ||
@@ -302,13 +354,46 @@ export function useMissionLive(opts: {
           // canvas_patch handled by always-on /api/canvas/live
 
           if (msg.type === "market") {
-            setLastTick(msg as unknown as Record<string, unknown>)
+            const tick = msg as unknown as Record<string, unknown>
+            setLastTick((prev) => {
+              // Never let an empty-price Graph event wipe a good spot price
+              if (
+                (tick.price == null || tick.price === "") &&
+                prev?.price != null &&
+                prev.price !== ""
+              ) {
+                return {
+                  ...tick,
+                  price: prev.price,
+                  amount1: prev.amount1 ?? tick.amount1,
+                }
+              }
+              return tick
+            })
+            const priceNum = Number(tick.price)
+            if (Number.isFinite(priceNum) && priceNum > 0) {
+              const pair = `${String(tick.symbol1 || "")}/${String(tick.symbol0 || "")}`
+              setTickHistory((prev) =>
+                [
+                  ...prev,
+                  {
+                    at: String(tick.at || new Date().toISOString()),
+                    price: priceNum,
+                    pair,
+                    usd:
+                      tick.amount1 != null && Number(tick.amount1) > 0
+                        ? Number(tick.amount1)
+                        : undefined,
+                  },
+                ].slice(-60)
+              )
+            }
             applyPatchLocal({
               op: "set",
               widgetId: "pool_table",
               kind: "pool_table",
               path: "lastTick",
-              data: msg,
+              data: tick,
             })
           }
         } catch {
@@ -338,6 +423,7 @@ export function useMissionLive(opts: {
     setAgentEvents([])
     setTapeRows([])
     setLastTick(null)
+    setTickHistory([])
   }, [liveActive])
 
   // After each chat turn, re-check live status (tool may have started watch mid-turn)
@@ -379,6 +465,52 @@ export function useMissionLive(opts: {
       const token = await getAccessToken()
       if (!token) return
       const id = missionId || activeMissionId
+      const marketAction =
+        action === "pause" || action === "resume" || action === "stop"
+          ? action
+          : null
+
+      if (marketAction) {
+        // Optimistic UI — don't wait on Privy/network for feedback
+        if (marketAction === "pause") setWorking(false)
+        if (marketAction === "resume") setWorking(true)
+        if (marketAction === "stop") {
+          setWorking(false)
+          setLiveActive(false)
+          setTickHistory([])
+          setLastTick(null)
+        }
+        try {
+          const res = await fetch("/api/market/watch", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              action: marketAction,
+              missionId: id,
+              conversationId: opts.conversationId,
+            }),
+          })
+          if (res.ok) {
+            const data = await res.json()
+            setWorking(Boolean(data.working))
+            if (data.liveActive === false) {
+              setLiveActive(false)
+              setTickHistory([])
+              setLastTick(null)
+            } else if (data.liveActive === true) {
+              setLiveActive(true)
+            }
+          }
+        } catch {
+          /* keep optimistic state; SSE/live-status will reconcile */
+        }
+        await refreshLiveStatus()
+        return
+      }
+
       if (!id && action !== "kill_switch") return
       await fetch("/api/missions", {
         method: "POST",
@@ -392,7 +524,41 @@ export function useMissionLive(opts: {
       if (action === "resume" || action === "start") setWorking(true)
       await refreshLiveStatus()
     },
-    [getAccessToken, activeMissionId, refreshLiveStatus]
+    [getAccessToken, activeMissionId, refreshLiveStatus, opts.conversationId]
+  )
+
+  const switchMarket = useCallback(
+    async (symbol0: string, symbol1: string) => {
+      const token = await getAccessToken()
+      if (!token) return
+      setTickHistory([])
+      setLastTick(null)
+      setWatchedPair({ symbol0, symbol1 })
+      setWorking(true)
+      setLiveActive(true)
+      const res = await fetch("/api/market/watch", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "switch",
+          symbol0,
+          symbol1,
+          conversationId: opts.conversationId,
+          missionId: activeMissionId,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.session?.missionId) {
+          setActiveMissionId(String(data.session.missionId))
+        }
+      }
+      await refreshLiveStatus()
+    },
+    [getAccessToken, opts.conversationId, activeMissionId, refreshLiveStatus]
   )
 
   return {
@@ -402,9 +568,12 @@ export function useMissionLive(opts: {
     activeMissionId,
     tapeRows,
     lastTick,
+    tickHistory,
+    watchedPair,
     canvasModel,
     setCanvasModel,
     missionAction,
+    switchMarket,
     refreshLiveStatus,
     refreshCanvas,
     syncCanvasShell,

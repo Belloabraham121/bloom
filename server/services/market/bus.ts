@@ -8,6 +8,8 @@ import {
   ensureRedisConnected,
   getRedis,
   getRedisSubscriber,
+  isRedisCircuitOpen,
+  redisEnabled,
 } from "@/server/services/redis/client"
 
 export type MarketEvent = {
@@ -90,14 +92,16 @@ async function publish(channel: string, message: BusMessage) {
   pushRecent(channel, raw)
   localBus.emit(channel, message)
 
+  if (!redisEnabled() || isRedisCircuitOpen()) return
+
   try {
     const redis = getRedis()
     await ensureRedisConnected(redis)
     await redis.publish(channel, raw)
     await redis.lpush(recentKey(channel), raw)
     await redis.ltrim(recentKey(channel), 0, 99)
-  } catch (error) {
-    console.warn("[market-bus] redis publish failed — local only", error)
+  } catch {
+    /* local only */
   }
 }
 
@@ -152,6 +156,8 @@ export async function getRecentMessages(
     })
     .filter(Boolean) as BusMessage[]
 
+  if (!redisEnabled() || isRedisCircuitOpen()) return fromMemory
+
   try {
     const redis = getRedis()
     await ensureRedisConnected(redis)
@@ -201,28 +207,30 @@ export async function subscribeChannels(
   }
 
   let redisCleanup: (() => Promise<void>) | null = null
-  try {
-    const sub = getRedisSubscriber()
-    await ensureRedisConnected(sub)
+  if (redisEnabled() && !isRedisCircuitOpen()) {
+    try {
+      const sub = getRedisSubscriber()
+      await ensureRedisConnected(sub)
 
-    const handler = (channel: string, raw: string) => {
-      if (!channels.includes(channel)) return
-      try {
-        onMessage(channel, JSON.parse(raw) as BusMessage)
-      } catch {
-        /* ignore */
+      const handler = (channel: string, raw: string) => {
+        if (!channels.includes(channel)) return
+        try {
+          onMessage(channel, JSON.parse(raw) as BusMessage)
+        } catch {
+          /* ignore */
+        }
       }
-    }
 
-    sub.on("message", handler)
-    if (channels.length) await sub.subscribe(...channels)
+      sub.on("message", handler)
+      if (channels.length) await sub.subscribe(...channels)
 
-    redisCleanup = async () => {
-      sub.off("message", handler)
-      if (channels.length) await sub.unsubscribe(...channels)
+      redisCleanup = async () => {
+        sub.off("message", handler)
+        if (channels.length) await sub.unsubscribe(...channels)
+      }
+    } catch {
+      /* local only */
     }
-  } catch (error) {
-    console.warn("[market-bus] redis subscribe failed — local only", error)
   }
 
   return async () => {

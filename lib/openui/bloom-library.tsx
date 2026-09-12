@@ -1,7 +1,7 @@
 "use client"
 
-import type { ReactNode } from "react"
-import { createLibrary, defineComponent } from "@openuidev/react-lang"
+import { useEffect, useRef, useState, type ReactNode } from "react"
+import { createLibrary, defineComponent, Renderer } from "@openuidev/react-lang"
 import type { ComponentGroup, PromptOptions } from "@openuidev/react-lang"
 import {
   openuiComponentGroups,
@@ -11,9 +11,9 @@ import {
 import { z } from "zod/v4"
 import { useLiveFeed, useCanvasSlot } from "@/components/chat/live-feed-context"
 import { AnimatedOrb } from "@/components/chat/animated-orb"
+import { CanvasRenderGlow } from "@/components/chat/canvas-render-glow"
 import { Button } from "@/components/ui/button"
 import { Pause, Play, Square } from "lucide-react"
-import { Renderer } from "@openuidev/react-lang"
 import { normalizeSlotOpenui } from "@/server/services/canvas/model"
 
 function CardShell({
@@ -388,6 +388,68 @@ const Root = defineComponent({
   ),
 })
 
+function LiveMarketSwitcherView({ title }: { title?: string }) {
+  const { liveActive, watchedPair, switchMarket, working } = useLiveFeed()
+  const presets = [
+    { symbol0: "USDC", symbol1: "ETH", label: "USDC/ETH" },
+    { symbol0: "USDC", symbol1: "WBTC", label: "USDC/WBTC" },
+    { symbol0: "DAI", symbol1: "ETH", label: "DAI/ETH" },
+    { symbol0: "USDT", symbol1: "ETH", label: "USDT/ETH" },
+  ]
+  const activeLabel = watchedPair
+    ? `${watchedPair.symbol1}/${watchedPair.symbol0}`
+    : null
+
+  return (
+    <CardShell title={title || "Markets"}>
+      {!liveActive ? (
+        <p className="text-xs text-muted-foreground">
+          Start a live watch to switch pairs.
+        </p>
+      ) : (
+        <>
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            Watching{" "}
+            <span className="font-medium text-foreground">
+              {activeLabel || "—"}
+            </span>
+            {working ? "" : " · paused"}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {presets.map((p) => {
+              const selected =
+                watchedPair?.symbol0 === p.symbol0 &&
+                watchedPair?.symbol1 === p.symbol1
+              return (
+                <Button
+                  key={p.label}
+                  type="button"
+                  size="sm"
+                  variant={selected ? "default" : "outline"}
+                  className="h-8 text-xs"
+                  onClick={() => void switchMarket(p.symbol0, p.symbol1)}
+                >
+                  {p.label}
+                </Button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </CardShell>
+  )
+}
+
+const LiveMarketSwitcher = defineComponent({
+  name: "LiveMarketSwitcher",
+  description:
+    "Buttons to switch the live watched pair (USDC/ETH, USDC/WBTC, …). Place in live Stack after start_market_watch so the user can change markets without re-prompting.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <LiveMarketSwitcherView title={props.title} />,
+})
+
 function LiveActivityView({ title }: { title?: string }) {
   const { liveActive, working, events, missionAction } = useLiveFeed()
   const latest = events[0]
@@ -521,24 +583,108 @@ const LiveTradeTape = defineComponent({
   component: ({ props }) => <LiveTradeTapeView title={props.title} />,
 })
 
-function LiveMarketTickView({ title }: { title?: string }) {
-  const { liveActive, lastTick } = useLiveFeed()
+function LivePriceSparkline({
+  points,
+}: {
+  points: { price: number }[]
+}) {
+  if (points.length < 2) {
+    return (
+      <div className="flex h-24 items-center justify-center rounded-lg bg-muted/30 text-[11px] text-muted-foreground">
+        Collecting price samples…
+      </div>
+    )
+  }
+  const prices = points.map((p) => p.price)
+  const min = Math.min(...prices)
+  const max = Math.max(...prices)
+  const span = max - min || 1
+  const w = 320
+  const h = 96
+  const pad = 6
+  const coords = prices.map((price, i) => {
+    const x = pad + (i / (prices.length - 1)) * (w - pad * 2)
+    const y = pad + (1 - (price - min) / span) * (h - pad * 2)
+    return `${x},${y}`
+  })
+  const line = coords.join(" ")
+  const area = `${pad},${h - pad} ${line} ${w - pad},${h - pad}`
+  const up = prices[prices.length - 1]! >= prices[0]!
+
   return (
-    <CardShell title={title || "Live market tick"}>
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      className="h-24 w-full overflow-visible"
+      role="img"
+      aria-label="Live price chart"
+    >
+      <polygon
+        points={area}
+        fill={up ? "hsl(142 70% 45% / 0.18)" : "hsl(0 70% 50% / 0.15)"}
+      />
+      <polyline
+        points={line}
+        fill="none"
+        stroke={up ? "hsl(142 70% 45%)" : "hsl(0 70% 55%)"}
+        strokeWidth="2.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function LiveMarketTickView({ title }: { title?: string }) {
+  const { liveActive, lastTick, tickHistory } = useLiveFeed()
+  const pair =
+    lastTick && (lastTick.symbol0 || lastTick.symbol1)
+      ? `${String(lastTick.symbol1 || "")}/${String(lastTick.symbol0 || "")}`
+      : null
+  const price = lastTick?.price != null ? String(lastTick.price) : null
+  const usd1 =
+    lastTick?.amount1 != null && Number(lastTick.amount1) > 0
+      ? Number(lastTick.amount1)
+      : null
+  const source =
+    typeof lastTick?.pool === "string" && lastTick.pool.startsWith("coingecko:")
+      ? "CoinGecko"
+      : lastTick?.pool
+        ? "Uniswap"
+        : null
+
+  return (
+    <CardShell title={title || "Live market"}>
       {!liveActive || !lastTick ? (
         <p className="text-xs text-muted-foreground">
           {liveActive ? "Waiting for ticks…" : "Waiting for live session…"}
         </p>
       ) : (
-        <p className="text-sm text-foreground">
-          {String(lastTick.symbol0 || "")}/{String(lastTick.symbol1 || "")} ·{" "}
-          {String(lastTick.price || "—")}
-          {lastTick.pool ? (
-            <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground">
-              {String(lastTick.pool)}
-            </span>
-          ) : null}
-        </p>
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="text-sm font-medium text-foreground">
+              {pair || "Market"}
+            </p>
+            <p className="font-mono text-lg tabular-nums text-foreground">
+              {price && Number(price) > 0
+                ? Number(price).toLocaleString(undefined, {
+                    maximumFractionDigits: 4,
+                  })
+                : "—"}
+            </p>
+          </div>
+          {usd1 != null && (
+            <p className="text-xs text-muted-foreground">
+              Spot ≈ $
+              {usd1.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            </p>
+          )}
+          <LivePriceSparkline points={tickHistory} />
+          {source && (
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground/80">
+              via {source} · {tickHistory.length} samples
+            </p>
+          )}
+        </div>
       )}
     </CardShell>
   )
@@ -547,11 +693,41 @@ function LiveMarketTickView({ title }: { title?: string }) {
 const LiveMarketTick = defineComponent({
   name: "LiveMarketTick",
   description:
-    "Latest live pool/price tick from the market bus. Use after start_market_watch when user wants real-time prices.",
+    "Latest live price + sparkline. Use after start_market_watch for real-time prices.",
   props: z.object({
     title: z.string().optional(),
   }),
   component: ({ props }) => <LiveMarketTickView title={props.title} />,
+})
+
+function LiveMarketChartView({ title }: { title?: string }) {
+  const { liveActive, tickHistory, lastTick } = useLiveFeed()
+  return (
+    <CardShell title={title || "Price chart"}>
+      {!liveActive ? (
+        <p className="text-xs text-muted-foreground">Waiting for live session…</p>
+      ) : (
+        <>
+          <LivePriceSparkline points={tickHistory} />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {lastTick
+              ? `${String(lastTick.symbol1 || "")}/${String(lastTick.symbol0 || "")} · ${tickHistory.length} points`
+              : "Waiting for first tick…"}
+          </p>
+        </>
+      )}
+    </CardShell>
+  )
+}
+
+const LiveMarketChart = defineComponent({
+  name: "LiveMarketChart",
+  description:
+    "Live price sparkline chart. Emit after start_market_watch with LiveMarketTick.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <LiveMarketChartView title={props.title} />,
 })
 
 function InflightTradeView({ title }: { title?: string }) {
@@ -591,12 +767,31 @@ let bloomLibraryRef: ReturnType<typeof createLibrary> | null = null
 function CanvasSlotView({ slotId }: { slotId: string }) {
   const slot = useCanvasSlot(slotId)
   const lib = bloomLibraryRef
+  const [glowing, setGlowing] = useState(!slot?.openui)
+  const prevUpdatedRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!slot?.openui) {
+      setGlowing(true)
+      return
+    }
+    if (prevUpdatedRef.current !== slot.updatedAt) {
+      prevUpdatedRef.current = slot.updatedAt
+      setGlowing(true)
+      const id = window.setTimeout(() => setGlowing(false), 600)
+      return () => window.clearTimeout(id)
+    }
+    setGlowing(false)
+  }, [slot?.openui, slot?.updatedAt])
+
   if (!slot?.openui) {
     return (
-      <div className="my-2 rounded-xl border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-[11px] text-muted-foreground">
-        Slot <span className="font-mono text-foreground/70">{slotId}</span> —
-        waiting for patch_canvas…
-      </div>
+      <CanvasRenderGlow active className="my-2 w-full">
+        <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-[11px] text-muted-foreground">
+          Slot <span className="font-mono text-foreground/70">{slotId}</span> —
+          waiting for patch_canvas…
+        </div>
+      </CanvasRenderGlow>
     )
   }
   if (!lib) {
@@ -605,17 +800,23 @@ function CanvasSlotView({ slotId }: { slotId: string }) {
     )
   }
   return (
-    <div
-      key={`${slotId}-${slot.updatedAt}`}
-      className="w-full min-w-0 animate-in fade-in duration-150"
-      data-canvas-slot={slotId}
+    <CanvasRenderGlow
+      active={glowing}
+      className="my-2 w-full min-w-0"
+      settleMs={480}
     >
-      <Renderer
-        library={lib}
-        response={normalizeSlotOpenui(slot.openui)}
-        isStreaming={false}
-      />
-    </div>
+      <div
+        key={`${slotId}-${slot.updatedAt}`}
+        className="w-full min-w-0 animate-in fade-in duration-150"
+        data-canvas-slot={slotId}
+      >
+        <Renderer
+          library={lib}
+          response={normalizeSlotOpenui(slot.openui)}
+          isStreaming={false}
+        />
+      </div>
+    </CanvasRenderGlow>
   )
 }
 
@@ -645,8 +846,10 @@ const TRADING_COMPONENTS = [
   LpPositionCard,
   PoolTelemetry,
   LiveActivity,
+  LiveMarketSwitcher,
   LiveTradeTape,
   LiveMarketTick,
+  LiveMarketChart,
   InflightTrade,
   CanvasSlot,
   Root,
@@ -658,8 +861,10 @@ const tradingComponentGroup: ComponentGroup = {
   notes: [
     "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
     "- Incremental canvas: shell Stack with CanvasSlot(\"id\"); updates via patch_canvas kind=openui — never full redraw for small changes.",
-    "- Real-time ONLY when user asks: start_market_watch then emit LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade in Stack.",
+    "- Live dashboards: start_market_watch then LiveActivity + LiveMarketSwitcher + LiveMarketTick + LiveTradeTape.",
+    "- Real-time ONLY when user asks: start_market_watch then emit Live* components in Stack.",
     "- Never assume live chrome exists outside OpenUI — the model must place Live* components.",
+    "- Do NOT add Pause/Play/Stop Buttons for live watch — LiveActivity already provides those controls.",
     "- Token discovery → TokenList + TokenRow. Chains → ChainList + ChainRow.",
     "- Prefer Button with Action([@ToAssistant(\"...\")]) for confirm / follow-up clicks.",
   ],
@@ -686,10 +891,11 @@ Then call patch_canvas replace widgetId=quote kind=openui data={{openui: "QuoteS
 and patch_canvas for live with LiveActivity / LiveTradeTape fragments. Later ticks: only patch_canvas — do not re-emit root Stack.`,
     `Example — live real-time terminal (after start_market_watch):
 
-root = Stack([title, activity, tick, tape])
+root = Stack([title, switcher, activity, tick, tape])
 title = TextContent("Live USDC/ETH", "large-heavy")
+switcher = LiveMarketSwitcher("Markets")
 activity = LiveActivity("Agent activity")
-tick = LiveMarketTick("Last tick")
+tick = LiveMarketTick("Live market")
 tape = LiveTradeTape("Trades")`,
     `Example — Pool TVL table + chart:
 
@@ -706,6 +912,7 @@ s1 = Series("TVL", tvls)`,
     "Every program must start with root = Stack([...]). Do not use Root(...).",
     "Prefer CanvasSlot + patch_canvas for incremental updates; only emit a new full Stack for first paint or major layout changes.",
     "Live UI must be OpenUI LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade — never assume fixed chat chrome.",
+    "Never emit Pause/Play/Stop Button + @ToAssistant for market watch; use LiveActivity controls only.",
     "Only after start_market_watch or start_mission when the user asked for real-time.",
     "For Uniswap trading flows prefer Trading components (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry, etc.).",
     "For comparisons and analytics use Table, BarChart, LineChart, PieChart, etc.",
@@ -715,7 +922,7 @@ s1 = Series("TVL", tvls)`,
 }
 
 export const bloomLibrary = createLibrary({
-  id: "bloom-trading@4",
+  id: "bloom-trading@5",
   root: "Stack",
   componentGroups: [...openuiComponentGroups, tradingComponentGroup],
   components: [

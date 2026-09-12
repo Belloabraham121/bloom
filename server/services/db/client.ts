@@ -14,7 +14,7 @@ function getSql() {
     globalForDb.bloomSql = postgres(connectionString, {
       max: 10,
       idle_timeout: 20,
-      connect_timeout: 10,
+      connect_timeout: 3,
     })
   }
   return globalForDb.bloomSql

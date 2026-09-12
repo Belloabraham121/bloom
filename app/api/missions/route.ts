@@ -15,6 +15,7 @@ import {
   startLiveSession,
   stopLiveSession,
   getLiveSession,
+  patchLiveSession,
 } from "@/server/services/market/live-session"
 
 export const runtime = "nodejs"
@@ -120,6 +121,9 @@ export async function POST(request: Request) {
       const mission = await updateMission(body.missionId, user.id, {
         status: "paused",
       })
+      const { stopLiveIngest } = await import("@/server/services/market/ingest")
+      stopLiveIngest()
+      await patchLiveSession(user.id, { paused: true }).catch(() => null)
       await publishAgentEvent({
         userId: user.id,
         missionId: body.missionId,
@@ -133,6 +137,8 @@ export async function POST(request: Request) {
       const mission = await updateMission(body.missionId, user.id, {
         status: "stopped",
       })
+      const { stopLiveIngest } = await import("@/server/services/market/ingest")
+      stopLiveIngest()
       await stopLiveSession(user.id)
       await publishAgentEvent({
         userId: user.id,

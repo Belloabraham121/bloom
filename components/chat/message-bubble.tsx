@@ -9,7 +9,7 @@ import { AnimatedOrb } from "./animated-orb"
 import { Renderer, type ActionEvent } from "@openuidev/react-lang"
 import { ThemeProvider } from "@openuidev/react-ui/ThemeProvider"
 import { bloomLibrary } from "@/lib/openui/bloom-library"
-import { looksLikeOpenUI } from "@/lib/openui/detect"
+import { looksLikeOpenUI, normalizeOpenUIContent } from "@/lib/openui/detect"
 
 interface MessageBubbleProps {
   message: Message
@@ -27,6 +27,9 @@ export function MessageBubble({
   onOpenUIAction,
 }: MessageBubbleProps) {
   const isUser = message.role === "user"
+  const openuiContent = !isUser
+    ? normalizeOpenUIContent(message.content)
+    : message.content
   const useOpenUI = !isUser && looksLikeOpenUI(message.content, isStreaming)
 
   return (
@@ -98,7 +101,7 @@ export function MessageBubble({
                 <div className="openui-bloom w-full min-w-0 [&_.recharts-responsive-container]:!w-full">
                   <Renderer
                     library={bloomLibrary}
-                    response={message.content}
+                    response={openuiContent}
                     isStreaming={isStreaming}
                     onAction={onOpenUIAction}
                   />

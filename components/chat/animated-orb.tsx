@@ -6,10 +6,13 @@ export function AnimatedOrb({
   className,
   variant = "default",
   size = 32,
+  glow = false,
 }: {
   className?: string
   variant?: "default" | "red"
   size?: number
+  /** Stronger luminous glow while canvas / UI is rendering */
+  glow?: boolean
 }) {
   const colors =
     variant === "red"
@@ -39,13 +42,15 @@ export function AnimatedOrb({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-full ${className ?? ""}`}
+      className={`relative overflow-hidden rounded-full ${glow ? "orb-glow-active" : ""} ${className ?? ""}`}
       style={{
         width: size,
         height: size,
         backgroundColor: colors.bg,
         animation: "orb-hue-rotate 8s linear infinite",
-        boxShadow: "0 0 0 1px hsl(0 0% 25% / 0.6)",
+        boxShadow: glow
+          ? undefined
+          : "0 0 0 1px hsl(0 0% 25% / 0.6)",
       }}
       aria-hidden="true"
     >

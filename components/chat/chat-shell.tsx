@@ -29,6 +29,7 @@ import {
 import { shortenAddress } from "@/lib/privy-wallet"
 import type { ActionEvent } from "@openuidev/react-lang"
 import { BuiltinActionType } from "@openuidev/react-lang"
+import { parseLiveMarketControl } from "@/lib/openui/detect"
 
 export interface Message {
   id: string
@@ -386,6 +387,35 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
     [isStreaming, selectedModel, getAccessToken]
   )
 
+  const {
+    liveActive,
+    agentEvents,
+    working,
+    tapeRows,
+    lastTick,
+    tickHistory,
+    watchedPair,
+    canvasModel,
+    missionAction,
+    switchMarket,
+    refreshLiveStatus,
+    syncCanvasShell,
+  } = useMissionLive({
+    conversationId: activeId,
+    chainId: 1,
+    refreshKey: messages.length,
+  })
+
+  const liveFromCanvas = Boolean(
+    (canvasModel?.widgets?._live?.props as { active?: boolean } | undefined)
+      ?.active
+  )
+  const feedLiveActive = liveActive || liveFromCanvas
+
+  useEffect(() => {
+    if (!isStreaming) void refreshLiveStatus()
+  }, [isStreaming, refreshLiveStatus])
+
   const handleOpenUIAction = useCallback(
     (event: ActionEvent) => {
       if (event.type === BuiltinActionType.OpenUrl) {
@@ -401,10 +431,17 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
             event.humanFriendlyMessage.trim()) ||
           (typeof event.params?.context === "string" && event.params.context) ||
           ""
-        if (text) void sendMessage(text)
+        if (!text) return
+        // Live Pause/Play/Stop must hit /api/market/watch — never the LLM
+        const control = parseLiveMarketControl(text)
+        if (control) {
+          void missionAction(control)
+          return
+        }
+        void sendMessage(text)
       }
     },
-    [sendMessage]
+    [sendMessage, missionAction]
   )
 
   const retry = useCallback(() => {
@@ -430,32 +467,6 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   const displayName = userName || userEmail.split("@")[0]
   const walletLabel = walletAddress ? shortenAddress(walletAddress) : null
 
-  const {
-    liveActive,
-    agentEvents,
-    working,
-    tapeRows,
-    lastTick,
-    canvasModel,
-    missionAction,
-    refreshLiveStatus,
-    syncCanvasShell,
-  } = useMissionLive({
-    conversationId: activeId,
-    chainId: 1,
-    refreshKey: messages.length,
-  })
-
-  const liveFromCanvas = Boolean(
-    (canvasModel?.widgets?._live?.props as { active?: boolean } | undefined)
-      ?.active
-  )
-  const feedLiveActive = liveActive || liveFromCanvas
-
-  useEffect(() => {
-    if (!isStreaming) void refreshLiveStatus()
-  }, [isStreaming, refreshLiveStatus])
-
   return (
     <LiveFeedProvider
       value={{
@@ -464,7 +475,10 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
         events: agentEvents,
         tapeRows,
         lastTick,
+        tickHistory,
+        watchedPair,
         missionAction,
+        switchMarket,
         canvasModel,
       }}
     >

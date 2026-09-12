@@ -749,7 +749,12 @@ export function createTradingToolHandlers(
         const errors: string[] = []
 
         try {
-          ensureLiveIngest({ chainId })
+          ensureLiveIngest({
+            chainId,
+            symbol0: q.symbol0 || "USDC",
+            symbol1: q.symbol1 || "ETH",
+            userId: ctx.userId,
+          })
         } catch (e) {
           errors.push(`ingest: ${e instanceof Error ? e.message : String(e)}`)
         }
@@ -781,6 +786,9 @@ export function createTradingToolHandlers(
           chainId,
           purpose: q.purpose || "market_watch",
           missionId,
+          symbol0: q.symbol0 || "USDC",
+          symbol1: q.symbol1 || "ETH",
+          paused: false,
           startedAt: new Date().toISOString(),
         })
 
@@ -795,11 +803,12 @@ export function createTradingToolHandlers(
               kind: "custom",
               data: {
                 active: true,
+                paused: false,
                 chainId,
                 missionId,
                 purpose: q.purpose || "market_watch",
-                symbol0: q.symbol0,
-                symbol1: q.symbol1,
+                symbol0: q.symbol0 || "USDC",
+                symbol1: q.symbol1 || "ETH",
               },
             },
           })
@@ -833,8 +842,8 @@ export function createTradingToolHandlers(
           missionId,
           chainId,
           warnings: errors.length ? errors : undefined,
-          openuiHint:
-            "REQUIRED: respond with OpenUI Stack including LiveActivity, LiveMarketTick, LiveTradeTape (and InflightTrade if trading). Example: root = Stack([title, activity, tick, tape])",
+              openuiHint:
+            "REQUIRED: OpenUI Stack with LiveActivity, LiveMarketTick (includes sparkline), LiveTradeTape. Pass symbol0=USDC symbol1=ETH on start_market_watch.",
         }
       },
     },

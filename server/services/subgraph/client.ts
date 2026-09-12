@@ -117,6 +117,8 @@ export async function getTopPools(params: {
           feeTier
           totalValueLockedUSD
           volumeUSD
+          token0Price
+          token1Price
           token0 { id symbol name decimals }
           token1 { id symbol name decimals }
         }
@@ -137,6 +139,8 @@ type PoolRow = {
   totalValueLockedUSD?: string
   reserveUSD?: string
   volumeUSD?: string
+  token0Price?: string
+  token1Price?: string
   token0?: TokenRef
   token1?: TokenRef
 }
@@ -148,6 +152,8 @@ function normalizePoolRow(row: PoolRow, version: UniswapVersion) {
     feeTier: row.feeTier ?? null,
     tvlUsd: row.totalValueLockedUSD ?? row.reserveUSD ?? null,
     volumeUsd: row.volumeUSD ?? null,
+    token0Price: row.token0Price ?? null,
+    token1Price: row.token1Price ?? null,
     token0: row.token0 ?? null,
     token1: row.token1 ?? null,
     pairLabel:
