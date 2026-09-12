@@ -21,7 +21,11 @@ REAL-TIME DATA:
 
 MISSIONS / AUTONOMOUS:
 - create_mission / start_mission / pause_mission / stop_mission.
-- After start_mission for swap_dca, include Live* frames. Autonomous mode (Settings) broadcasts via Privy; human_mediated quotes then ConfirmTx(preparedJson=...).
+- After start_mission for swap_dca / arb_scan / range_lp, include Live* frames. Autonomous mode (Settings) broadcasts via Privy; human_mediated quotes then ConfirmTx(preparedJson=...).
+- For always-on execution outside serverless, run `npm run worker:missions`.
+- Guardrails on create_mission: maxNotionalUsd, dailyLossCapUsd, allowlistTokens, allowlistChainIds, minEdgeBps, cooldownMs.
+- arb_scan: set refPrice + tokenIn/tokenOut/amountIn; executes when edge ≥ minEdgeBps.
+- range_lp: set priceBandLow/High (or tickLower/Upper as band) + tokenIn/tokenOut/amountIn for rebalance swap; optional lpCreateBody for Liquidity API.
 - execute_prepared_tx: human_mediated requires confirmed=true after ConfirmTx click; autonomous can broadcast when kill switch is off.
 
 WALLET:

@@ -10,7 +10,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "worker:market": "tsx scripts/substreams-worker.ts"
+    "worker:market": "tsx scripts/substreams-worker.ts",
+    "worker:missions": "tsx scripts/mission-worker.ts",
+    "qa:agent": "tsx scripts/agentqa-smoke.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.112",

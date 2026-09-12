@@ -13,20 +13,20 @@ After Implementer or Fixer finishes a slice: Breaker/tests → Verifier PASS →
 
 | Check | Status |
 | --- | --- |
-| Every completed fix ends in a Verifier PASS + commit | partial — first ship commit pending |
-| Zero Cursor co-author on commits | implemented — filter history + cli attribution off |
+| Every completed fix ends in a Verifier PASS + commit | implemented — ship commits after AgentQA smoke |
+| Zero Cursor co-author on commits | implemented — strip trailer before push |
 
 ## Sub-agent spin-up
 
 ```text
 Role: <Coordinator|SpecChecker|Implementer|Breaker|Fixer|VisualQA|AgentQA|Verifier|Committer>
 Product: Bloom autonomous tx hub + infinite canvas + wallet ops
-Workstream: <W1|W2|W3|W4|W5|W6|W7|W8>
+Workstream: <W1|W2|W3|W4|W5|W6|W7|W8|W9|W10>
 Read: docs/QA_CHECKLIST.md
 Constraints:
   - OpenUI for GenUI frames; floating hub is fixed chrome; camera over infinite stage
   - Autonomous broadcast only when agent_mode=autonomous and kill_switch=false
-  - After any fix: tests + Verifier PASS + Committer commit before next workstream
+  - After any fix: npm run qa:agent + Verifier PASS + Committer commit
   - commits: zero Cursor co-author / branding
 ```
 
@@ -55,7 +55,8 @@ Constraints:
 | --- | --- |
 | swapper = user wallet address | implemented |
 | maxNotionalUsd / kill switch enforced | implemented |
-| Runner reliable with live session | partial — existing runner; deferred:long-lived worker hardening |
+| dailyLossCapUsd + allowlist tokens/chains | implemented |
+| Always-on mission worker (`npm run worker:missions`) | implemented |
 
 ### W4 Confirm — human confirm → execute
 
@@ -94,9 +95,28 @@ Constraints:
 
 | Check | Status |
 | --- | --- |
-| Autonomous mission → hub quoting→submitted | deferred:manual — needs live Privy + RPC |
+| `npm run qa:agent` smoke (guardrails, transfer, OpenUI) | implemented |
+| Autonomous mission → hub quoting→submitted (live Privy) | deferred:manual — run with linked wallet + worker:missions |
 | Canvas pan/zoom usable with Live* frames | deferred:manual |
-| Balances + send confirm path | deferred:manual |
+| Balances + send confirm path (live) | deferred:manual |
+
+### W9 Arb / LP auto-execute
+
+| Check | Status |
+| --- | --- |
+| arb_scan executes swap when edgeBps ≥ minEdgeBps + swap params | implemented |
+| range_lp rebalances via swap when out of price band + swap params | implemented |
+| range_lp optional lpCreateBody → Liquidity API | implemented |
+| Guardrails applied before arb/LP execute | implemented |
+
+### W10 Runner hardening
+
+| Check | Status |
+| --- | --- |
+| Multi-chain market subscribe | implemented |
+| Heartbeat + resubscribe | implemented |
+| kickMission ensures runner | implemented |
+| scripts/mission-worker.ts | implemented |
 
 ## Verifier leak / race (every UI workstream)
 
@@ -105,3 +125,10 @@ Constraints:
 | Hub unmount clears listeners / drag | implemented |
 | Canvas stage dispose wheel/pointer on unmount | implemented |
 | SSE subscriptions not duplicated on remount | partial — existing use-mission-live; deferred:dedicated audit |
+
+## Verifier — this ship
+
+| Check | Status |
+| --- | --- |
+| `npm run qa:agent` PASS | implemented |
+| Typecheck strategies/runner/guardrails | implemented — AgentQA loads strategies |
