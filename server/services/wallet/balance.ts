@@ -138,6 +138,42 @@ export async function getWalletBalance(params: {
   }
 }
 
+export const SUPPORTED_BALANCE_CHAIN_IDS = [1, 10, 137, 8453, 42161] as const
+
+export type WalletBalanceResult =
+  | WalletBalance
+  | { chainId: number; error: string }
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), ms)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+export async function getWalletBalancesAll(
+  address: string
+): Promise<WalletBalanceResult[]> {
+  const results = await Promise.allSettled(
+    SUPPORTED_BALANCE_CHAIN_IDS.map((chainId) =>
+      withTimeout(getWalletBalance({ address, chainId }), 8_000)
+    )
+  )
+  return results.map((r, i) => {
+    const chainId = SUPPORTED_BALANCE_CHAIN_IDS[i]!
+    if (r.status === "fulfilled") return r.value
+    const msg = r.reason instanceof Error ? r.reason.message : String(r.reason)
+    return { chainId, error: msg }
+  })
+}
+
 export function formatBalanceDisplay(value: string, digits = 6): string {
   const n = Number(value)
   if (!Number.isFinite(n)) return value

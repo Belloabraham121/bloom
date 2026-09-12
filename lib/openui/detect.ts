@@ -1,51 +1,83 @@
+/** Thesys / OpenUI Gateway stream framing (built in pieces for Turbopack). */
+const OPENUI_FRAME = "]]" + ">"
+const OPENUI_CONTENT = OPENUI_FRAME + "openui:content"
+const OPENUI_END = OPENUI_FRAME + "openui:end"
+
 /**
  * Strip Thesys / OpenUI Gateway framing and keep a single OpenUI Lang program.
- * Models often emit `]]>openui:content?thesys=true` … `]]>openui:end` plus fences.
+ * Models often emit framed openui:content / openui:end blocks plus fences.
  */
-export function normalizeOpenUIContent(content: string): string {
+function normalizeOpenUIContent(content: string): string {
   let text = content.replace(/\r\n/g, "\n")
 
   // Prefer the last framed block when multiple openui:content segments appear
-  const framed = [
-    ...text.matchAll(
-      /\]\]>openui:content[^\n]*\n([\s\S]*?)(?=\]\]>openui:content|\]\]>openui:end|$)/gi
-    ),
-  ]
-  if (framed.length > 0) {
-    const withRoot = [...framed].reverse().find((m) => /\broot\s*=/.test(m[1]))
-    text = (withRoot ?? framed[framed.length - 1])[1]
+  const parts: string[] = []
+  let searchFrom = 0
+  while (searchFrom < text.length) {
+    const start = text.indexOf(OPENUI_CONTENT, searchFrom)
+    if (start < 0) break
+    const afterHeaderNl = text.indexOf("\n", start)
+    if (afterHeaderNl < 0) break
+    const bodyStart = afterHeaderNl + 1
+    const nextContent = text.indexOf(OPENUI_CONTENT, bodyStart)
+    const nextEnd = text.indexOf(OPENUI_END, bodyStart)
+    let bodyEnd = text.length
+    if (nextContent >= 0) bodyEnd = Math.min(bodyEnd, nextContent)
+    if (nextEnd >= 0) bodyEnd = Math.min(bodyEnd, nextEnd)
+    parts.push(text.slice(bodyStart, bodyEnd))
+    searchFrom = bodyStart
   }
 
+  if (parts.length > 0) {
+    const withRoot = [...parts].reverse().find((p) => /\broot\s*=/.test(p))
+    text = withRoot ?? parts[parts.length - 1]!
+  }
+
+  // Strip leftover framing lines / fences
   text = text
-    .replace(/\]\]>openui:(?:content|end)[^\n]*/gi, "")
-    .replace(/^```(?:openui-lang|openui|lang)?\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "")
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim()
+      return !(
+        t.startsWith(OPENUI_CONTENT) ||
+        t.startsWith(OPENUI_END) ||
+        t === "```" ||
+        /^```(?:openui-lang|openui|lang)?$/i.test(t)
+      )
+    })
+    .join("\n")
     .trim()
 
   // Multiple root= programs (model corrected itself mid-stream): keep the last
-  const rootStarts = [...text.matchAll(/(?:^|\n)(root\s*=)/g)]
+  const rootStarts: number[] = []
+  const rootRe = /(?:^|\n)root\s*=/g
+  let m: RegExpExecArray | null
+  while ((m = rootRe.exec(text)) !== null) {
+    const at = m[0].startsWith("\n") ? m.index + 1 : m.index
+    rootStarts.push(at)
+  }
   if (rootStarts.length > 1) {
-    const last = rootStarts[rootStarts.length - 1]
-    const idx = last.index! + (last[0].startsWith("\n") ? 1 : 0)
-    text = text.slice(idx).trim()
+    text = text.slice(rootStarts[rootStarts.length - 1]!).trim()
   }
 
   return text
 }
 
 /** Heuristic: is this assistant content OpenUI Lang (GenUI)? */
-export function looksLikeOpenUI(content: string, isStreaming = false): boolean {
+function looksLikeOpenUI(content: string, isStreaming = false): boolean {
   const normalized = normalizeOpenUIContent(content)
   const trimmed = normalized.trim() || content.trim()
   if (!trimmed) return false
   if (trimmed.includes("root = Stack(") || /\bStack\s*\(/.test(trimmed)) return true
   if (trimmed.includes("root = Root(") || /\bRoot\s*\(/.test(trimmed)) return true
   if (trimmed.includes("root = Card(") || /\bCard\s*\(/.test(trimmed)) return true
-  if (content.includes("]]>openui") || content.includes("openui-lang")) return true
+  if (content.includes(OPENUI_FRAME + "openui") || content.includes("openui-lang")) {
+    return true
+  }
   // Progressive stream: treat incomplete OpenUI Lang as GenUI once root starts.
   if (isStreaming && /^\s*root\s*=/.test(trimmed)) return true
   if (
-    /\b(MessageText|TokenList|TokenRow|ChainList|ChainRow|QuoteSummary|ConfirmTx|ApprovalCard|TxStatusCard|GaslessOrderCard|ChainedPlanCard|LpPositionCard|PoolTelemetry|CostBreakdown|LiveActivity|LiveMarketSwitcher|LiveTradeTape|LiveMarketTick|LiveMarketChart|InflightTrade|CanvasSlot|TextContent|Table|BarChart|LineChart|PieChart|Button|Form|Tabs)\s*\(/.test(
+    /\b(MessageText|TokenList|TokenRow|ChainList|ChainRow|QuoteSummary|ConfirmTx|ConfirmSend|BalanceBoard|ApprovalCard|TxStatusCard|GaslessOrderCard|ChainedPlanCard|LpPositionCard|PoolTelemetry|CostBreakdown|LiveActivity|LiveMarketSwitcher|LiveTradeTape|LiveMarketTick|LiveMarketChart|InflightTrade|CanvasSlot|CanvasFrame|TextContent|Table|BarChart|LineChart|PieChart|Button|Form|Tabs)\s*\(/.test(
       trimmed
     )
   ) {
@@ -55,7 +87,7 @@ export function looksLikeOpenUI(content: string, isStreaming = false): boolean {
 }
 
 /** Map chat button text → direct market control (skip LLM round-trip). */
-export function parseLiveMarketControl(
+function parseLiveMarketControl(
   text: string
 ): "pause" | "resume" | "stop" | null {
   const t = text.trim().toLowerCase()
@@ -85,7 +117,7 @@ export function parseLiveMarketControl(
 }
 
 /** Pull short caption from MessageText("...") for the chat modal. */
-export function extractOpenUICaption(content: string): string | null {
+function extractOpenUICaption(content: string): string | null {
   const match = content.match(/MessageText\(\s*"((?:\\.|[^"\\])*)"/)
   if (!match) return null
   return match[1]
@@ -104,7 +136,7 @@ export type CanvasDocument = {
  * Latest OpenUI Lang document for the living canvas.
  * Plain-text assistant turns do not clear the canvas — previous GenUI stays.
  */
-export function resolveCanvasDocument(
+function resolveCanvasDocument(
   messages: Array<{ id: string; role: string; content: string }>,
   isStreaming: boolean
 ): CanvasDocument | null {
@@ -125,4 +157,12 @@ export function resolveCanvasDocument(
   }
 
   return null
+}
+
+export {
+  normalizeOpenUIContent,
+  looksLikeOpenUI,
+  parseLiveMarketControl,
+  extractOpenUICaption,
+  resolveCanvasDocument,
 }

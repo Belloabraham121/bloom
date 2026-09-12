@@ -15,11 +15,12 @@ export async function POST(request: Request) {
       requestPayload?: unknown
       conversationId?: string | null
       requireAutonomous?: boolean
+      tradeIntentId?: string | null
     }
 
-    if (!body.chainId || !body.to || !body.data) {
+    if (!body.chainId || !body.to) {
       return NextResponse.json(
-        { error: "chainId, to, and data are required" },
+        { error: "chainId and to are required" },
         { status: 400 }
       )
     }
@@ -31,12 +32,13 @@ export async function POST(request: Request) {
       prepared: {
         chainId: body.chainId,
         to: body.to,
-        data: body.data,
+        data: body.data || "0x",
         value: body.value,
         category: body.category,
         responsePayload: body.responsePayload,
         requestPayload: body.requestPayload,
         conversationId: body.conversationId,
+        tradeIntentId: body.tradeIntentId ?? null,
       },
     })
 

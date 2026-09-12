@@ -115,20 +115,44 @@ export function getSlotOpenui(
  * Accepts either a full `root = ...` program or a single expression / assignments.
  */
 function stripThesysFraming(content: string): string {
+  const frame = "]]" + ">"
+  const contentMark = frame + "openui:content"
+  const endMark = frame + "openui:end"
   let text = content.replace(/\r\n/g, "\n")
-  const framed = [
-    ...text.matchAll(
-      /\]\]>openui:content[^\n]*\n([\s\S]*?)(?=\]\]>openui:content|\]\]>openui:end|$)/gi
-    ),
-  ]
-  if (framed.length > 0) {
-    const withRoot = [...framed].reverse().find((m) => /\broot\s*=/.test(m[1]))
-    text = (withRoot ?? framed[framed.length - 1])[1]
+
+  const parts: string[] = []
+  let searchFrom = 0
+  while (searchFrom < text.length) {
+    const start = text.indexOf(contentMark, searchFrom)
+    if (start < 0) break
+    const afterHeaderNl = text.indexOf("\n", start)
+    if (afterHeaderNl < 0) break
+    const bodyStart = afterHeaderNl + 1
+    const nextContent = text.indexOf(contentMark, bodyStart)
+    const nextEnd = text.indexOf(endMark, bodyStart)
+    let bodyEnd = text.length
+    if (nextContent >= 0) bodyEnd = Math.min(bodyEnd, nextContent)
+    if (nextEnd >= 0) bodyEnd = Math.min(bodyEnd, nextEnd)
+    parts.push(text.slice(bodyStart, bodyEnd))
+    searchFrom = bodyStart
   }
+  if (parts.length > 0) {
+    const withRoot = [...parts].reverse().find((p) => /\broot\s*=/.test(p))
+    text = withRoot ?? parts[parts.length - 1]!
+  }
+
   return text
-    .replace(/\]\]>openui:(?:content|end)[^\n]*/gi, "")
-    .replace(/^```(?:openui-lang|openui|lang)?\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "")
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim()
+      return !(
+        t.startsWith(contentMark) ||
+        t.startsWith(endMark) ||
+        t === "```" ||
+        /^```(?:openui-lang|openui|lang)?$/i.test(t)
+      )
+    })
+    .join("\n")
     .trim()
 }
 

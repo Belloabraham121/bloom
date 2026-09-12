@@ -18,6 +18,7 @@ import {
 import {
   formatBalanceDisplay,
   getWalletBalance,
+  getWalletBalancesAll,
 } from "@/server/services/wallet/balance"
 import { db } from "@/server/services/db/client"
 import { wallets } from "@/server/services/db/schema"
@@ -397,6 +398,109 @@ export function createTradingToolHandlers(
           usdcDisplay: balance.usdc
             ? `${formatBalanceDisplay(balance.usdc.formatted, 2)} USDC`
             : null,
+        }
+      },
+    },
+
+    get_wallet_balances: {
+      description:
+        "Get native + USDC balances on all supported EVM chains (Ethereum, Optimism, Polygon, Base, Arbitrum). Emit BalanceBoard with rowsJson from the result.",
+      parameters: z.object({
+        address: z.string().optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as { address?: string }
+        let address = q.address?.trim()
+        if (!address) {
+          const wallet = await db.query.wallets.findFirst({
+            where: eq(wallets.userId, ctx.userId),
+          })
+          address = wallet?.address
+        }
+        if (!address) {
+          return { error: "No wallet linked to this account yet." }
+        }
+        const rows = await getWalletBalancesAll(address)
+        const boardRows = rows.map((r) => {
+          if ("error" in r) {
+            return {
+              chainId: r.chainId,
+              error: r.error,
+            }
+          }
+          return {
+            chainId: r.chainId,
+            chainName: r.chainName,
+            native: `${formatBalanceDisplay(r.native.formatted)} ${r.native.symbol}`,
+            usdc: r.usdc
+              ? `${formatBalanceDisplay(r.usdc.formatted, 2)} USDC`
+              : null,
+          }
+        })
+        return {
+          address,
+          rows: boardRows,
+          rowsJson: JSON.stringify(boardRows),
+          openuiHint:
+            'Emit BalanceBoard("Balances", rowsJson) with the rowsJson string from this result.',
+        }
+      },
+    },
+
+    prepare_transfer: {
+      description:
+        "Prepare a native or USDC transfer to an address. Returns prepared tx + needsConfirm. Emit ConfirmSend/ConfirmTx with preparedJson, then execute_prepared_tx with confirmed=true (or user clicks Confirm).",
+      parameters: z.object({
+        chainId: z.number(),
+        to: z.string(),
+        amount: z.string(),
+        token: z.enum(["native", "usdc"]).optional(),
+      }),
+      execute: async (args) => {
+        const q = asObject(args) as {
+          chainId: number
+          to: string
+          amount: string
+          token?: "native" | "usdc"
+        }
+        const { prepareTransfer } = await import(
+          "@/server/services/wallet/transfer"
+        )
+        const { insertTradeIntent } = await import(
+          "@/server/services/uniswap/intents.repo"
+        )
+        const prepared = prepareTransfer({
+          chainId: q.chainId,
+          to: q.to,
+          amount: q.amount,
+          token: q.token,
+        })
+        const intent = await insertTradeIntent({
+          userId: ctx.userId,
+          conversationId: ctx.conversationId,
+          kind: "transfer",
+          status: "proposed",
+          chainIdIn: q.chainId,
+          chainIdOut: q.chainId,
+          tokenIn: prepared.token,
+          tokenOut: q.to,
+          amountIn: q.amount,
+          calldataPayload: prepared,
+        })
+        const preparedJson = JSON.stringify({
+          chainId: prepared.chainId,
+          to: prepared.to,
+          data: prepared.data,
+          value: prepared.value,
+          category: prepared.category,
+          tradeIntentId: intent.id,
+        })
+        return {
+          needsConfirm: true,
+          intentId: intent.id,
+          prepared,
+          preparedJson,
+          openuiHint: `Emit ConfirmSend or ConfirmTx with preparedJson=${JSON.stringify(preparedJson)} summarizing send ${q.amount} ${q.token || "native"} to ${q.to} on chain ${q.chainId}.`,
         }
       },
     },
@@ -937,23 +1041,43 @@ export function createTradingToolHandlers(
 
     execute_prepared_tx: {
       description:
-        "Broadcast a prepared Uniswap tx via Privy. Autonomous mode required unless user confirmed.",
+        "Broadcast a prepared Uniswap/transfer tx via Privy. In human_mediated mode set confirmed=true only after the user clicked Confirm. In autonomous mode broadcasts when kill switch is off.",
       parameters: z.object({
         chainId: z.number(),
         to: z.string(),
-        data: z.string(),
+        data: z.string().optional(),
         value: z.string().optional(),
         category: z.string().optional(),
         responsePayload: z.unknown().optional(),
+        tradeIntentId: z.string().optional(),
+        confirmed: z.boolean().optional(),
       }),
       execute: async (args) => {
         const q = asObject(args) as {
           chainId: number
           to: string
-          data: string
+          data?: string
           value?: string
           category?: string
           responsePayload?: unknown
+          tradeIntentId?: string
+          confirmed?: boolean
+        }
+        const isAuto = ctx.decisionOrigin === "autonomous"
+        if (!isAuto && !q.confirmed) {
+          return {
+            ok: false,
+            needsConfirm: true,
+            error:
+              "User confirmation required. Emit ConfirmTx with preparedJson, then call again with confirmed=true.",
+            prepared: {
+              chainId: q.chainId,
+              to: q.to,
+              data: q.data || "0x",
+              value: q.value,
+              category: q.category,
+            },
+          }
         }
         const { executePreparedTx } = await import(
           "@/server/services/wallet/executor"
@@ -961,15 +1085,16 @@ export function createTradingToolHandlers(
         return executePreparedTx({
           userId: ctx.userId,
           agentMode: ctx.decisionOrigin,
-          requireAutonomous: ctx.decisionOrigin === "autonomous",
+          requireAutonomous: isAuto,
           prepared: {
             chainId: q.chainId,
             to: q.to,
-            data: q.data,
+            data: q.data || "0x",
             value: q.value,
             category: q.category,
             responsePayload: q.responsePayload,
             conversationId: ctx.conversationId,
+            tradeIntentId: q.tradeIntentId ?? null,
           },
         })
       },

@@ -1,0 +1,15 @@
+---
+description: Bloom multi-agent QA protocol — Verifier PASS then commit after every fix
+globs:
+alwaysApply: true
+---
+
+# Bloom plan-mode / agent QA
+
+Follow `docs/QA_CHECKLIST.md`.
+
+- Roles: Coordinator → SpecChecker → Implementer → Breaker → Fixer → VisualQA → AgentQA → Verifier → Committer
+- After any fix: tests/typecheck → Verifier PASS on workstream rows → **Committer commits** before starting the next workstream
+- Zero Cursor branding / Co-authored-by on commits
+- Push only when the user asks
+- Autonomous on-chain broadcast only when `agent_mode=autonomous` and kill switch is off

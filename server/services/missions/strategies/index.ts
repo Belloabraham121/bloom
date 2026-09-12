@@ -4,6 +4,13 @@ import { publishAgentEvent } from "@/server/services/market/bus"
 import { patchCanvasForUser } from "@/server/services/canvas/store"
 import { tradeClient } from "@/server/services/uniswap/trade.client"
 import { executePreparedTx } from "@/server/services/wallet/executor"
+import {
+  insertTradeIntent,
+  updateTradeIntent,
+} from "@/server/services/uniswap/intents.repo"
+import { db } from "@/server/services/db/client"
+import { users, wallets } from "@/server/services/db/schema"
+import { eq } from "drizzle-orm"
 import type { AgentMode } from "@/lib/types"
 
 export type StrategyContext = {
@@ -80,6 +87,18 @@ async function runSwapDca(
     return { acted: false, message: "missing tokenIn/tokenOut/amountIn" }
   }
 
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, ctx.userId),
+  })
+  if (user?.agentKillSwitch) {
+    return { acted: false, message: "kill_switch" }
+  }
+
+  const maxNotional = ctx.params.maxNotionalUsd ?? ctx.params.maxUsd
+  if (maxNotional != null && Number(amountIn) > Number(maxNotional)) {
+    return { acted: false, message: "above maxNotionalUsd" }
+  }
+
   if (ctx.params.priceThreshold && event.price) {
     const price = Number(event.price)
     const threshold = Number(ctx.params.priceThreshold)
@@ -87,6 +106,11 @@ async function runSwapDca(
       return { acted: false, message: "price above threshold" }
     }
   }
+
+  const wallet = await db.query.wallets.findFirst({
+    where: eq(wallets.userId, ctx.userId),
+  })
+  const swapper = wallet?.address
 
   await publishAgentEvent({
     userId: ctx.userId,
@@ -106,6 +130,18 @@ async function runSwapDca(
     },
   })
 
+  const intent = await insertTradeIntent({
+    userId: ctx.userId,
+    conversationId: ctx.conversationId,
+    kind: "swap_dca",
+    status: "quoting",
+    chainIdIn: chainId,
+    chainIdOut: chainId,
+    tokenIn,
+    tokenOut,
+    amountIn,
+  })
+
   try {
     const quoteBody = {
       type: "EXACT_INPUT",
@@ -114,7 +150,7 @@ async function runSwapDca(
       tokenOutChainId: chainId,
       tokenIn,
       tokenOut,
-      swapper: undefined as string | undefined,
+      swapper: swapper || undefined,
       slippageTolerance: slippageBps / 100,
     }
     const quote = (await tradeClient.quote(quoteBody, "autonomous")) as Record<
@@ -122,12 +158,18 @@ async function runSwapDca(
       unknown
     >
 
+    await updateTradeIntent(intent.id, {
+      status: "quoted",
+      quotePayload: quote,
+      routing: quote.routing != null ? String(quote.routing) : null,
+    })
+
     await publishAgentEvent({
       userId: ctx.userId,
       missionId: ctx.missionId,
       step: "deciding",
       message: `Quote routing=${String(quote.routing || "")}`,
-      payload: { routing: quote.routing },
+      payload: { routing: quote.routing, intentId: intent.id },
     })
 
     if (ctx.agentMode !== "autonomous") {
@@ -136,7 +178,7 @@ async function runSwapDca(
         missionId: ctx.missionId,
         step: "status",
         message: "Quote ready — enable autonomous or confirm to execute",
-        payload: { quote },
+        payload: { quote, intentId: intent.id },
       })
       return { acted: true, message: "quoted_awaiting_confirm" }
     }
@@ -147,6 +189,10 @@ async function runSwapDca(
     })
     const resultPayload = prepared.result as Record<string, unknown>
     const swap = (resultPayload.swap || resultPayload) as Record<string, unknown>
+    await updateTradeIntent(intent.id, {
+      status: "preparing",
+      calldataPayload: resultPayload,
+    })
     const result = await executePreparedTx({
       userId: ctx.userId,
       agentMode: ctx.agentMode,
@@ -161,7 +207,13 @@ async function runSwapDca(
         requestPayload: quoteBody,
         missionId: ctx.missionId,
         conversationId: ctx.conversationId,
+        tradeIntentId: intent.id,
       },
+    })
+
+    await updateTradeIntent(intent.id, {
+      status: result.ok ? "submitted" : "failed",
+      error: result.ok ? null : result.error || "failed",
     })
 
     return {
@@ -170,6 +222,7 @@ async function runSwapDca(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    await updateTradeIntent(intent.id, { status: "failed", error: message })
     await publishAgentEvent({
       userId: ctx.userId,
       missionId: ctx.missionId,

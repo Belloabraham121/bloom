@@ -1,6 +1,12 @@
 "use client"
 
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react"
 import { createLibrary, defineComponent, Renderer } from "@openuidev/react-lang"
 import type { ComponentGroup, PromptOptions } from "@openuidev/react-lang"
 import {
@@ -11,7 +17,7 @@ import {
 import { z } from "zod/v4"
 import { useLiveFeed, useCanvasSlot } from "@/components/chat/live-feed-context"
 import { AnimatedOrb } from "@/components/chat/animated-orb"
-import { CanvasRenderGlow } from "@/components/chat/canvas-render-glow"
+import { CanvasRenderGlow } from "@/lib/openui/canvas-render-glow"
 import { Button } from "@/components/ui/button"
 import { Pause, Play, Square } from "lucide-react"
 import { normalizeSlotOpenui } from "@/server/services/canvas/model"
@@ -209,11 +215,12 @@ const ApprovalCard = defineComponent({
 const ConfirmTx = defineComponent({
   name: "ConfirmTx",
   description:
-    "Ask the user to confirm broadcasting a prepared transaction or order.",
+    "Ask the user to confirm broadcasting a prepared transaction. Include preparedJson (stringified {chainId,to,data,value,category}) so Confirm can execute.",
   props: z.object({
     title: z.string(),
     summary: z.string(),
     txTo: z.string().optional(),
+    preparedJson: z.string().optional(),
     requiresConfirm: z.boolean().optional(),
   }),
   component: ({ props }) => (
@@ -225,9 +232,27 @@ const ConfirmTx = defineComponent({
         </p>
       )}
       {props.requiresConfirm !== false && (
-        <p className="mt-3 text-xs text-amber-400/90">
-          Confirm in chat or Settings → autonomous mode to auto-execute.
-        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => {
+              const detail = {
+                preparedJson: props.preparedJson || null,
+                summary: props.summary,
+              }
+              window.dispatchEvent(
+                new CustomEvent("bloom:confirm-tx", { detail })
+              )
+            }}
+          >
+            Confirm &amp; broadcast
+          </Button>
+          <p className="w-full text-[10px] text-muted-foreground">
+            Or enable Settings → Autonomous for unattended execution.
+          </p>
+        </div>
       )}
     </CardShell>
   ),
@@ -764,11 +789,25 @@ const InflightTrade = defineComponent({
 /** Filled by createLibrary below — nested slot Renderer uses the same library. */
 let bloomLibraryRef: ReturnType<typeof createLibrary> | null = null
 
-function CanvasSlotView({ slotId }: { slotId: string }) {
+function canvasFrameStyle(x?: number, y?: number): CSSProperties | undefined {
+  if (x == null) return undefined
+  return { position: "absolute", left: x, top: y ?? 0 }
+}
+
+function CanvasSlotView({
+  slotId,
+  x,
+  y,
+}: {
+  slotId: string
+  x?: number
+  y?: number
+}) {
   const slot = useCanvasSlot(slotId)
   const lib = bloomLibraryRef
   const [glowing, setGlowing] = useState(!slot?.openui)
   const prevUpdatedRef = useRef<string | null>(null)
+  const frameStyle = canvasFrameStyle(x, y)
 
   useEffect(() => {
     if (!slot?.openui) {
@@ -786,48 +825,172 @@ function CanvasSlotView({ slotId }: { slotId: string }) {
 
   if (!slot?.openui) {
     return (
-      <CanvasRenderGlow active className="my-2 w-full">
-        <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-[11px] text-muted-foreground">
-          Slot <span className="font-mono text-foreground/70">{slotId}</span> —
-          waiting for patch_canvas…
-        </div>
-      </CanvasRenderGlow>
+      <div style={frameStyle} className={x == null ? "relative" : undefined}>
+        <CanvasRenderGlow active className="my-2 w-full">
+          <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-[11px] text-muted-foreground">
+            Slot <span className="font-mono text-foreground/70">{slotId}</span> —
+            waiting for patch_canvas…
+          </div>
+        </CanvasRenderGlow>
+      </div>
     )
   }
   if (!lib) {
     return (
-      <div className="text-[11px] text-muted-foreground">Loading slot…</div>
+      <div style={frameStyle} className={x == null ? "relative" : undefined}>
+        <div className="text-[11px] text-muted-foreground">Loading slot…</div>
+      </div>
     )
   }
   return (
-    <CanvasRenderGlow
-      active={glowing}
-      className="my-2 w-full min-w-0"
-      settleMs={480}
-    >
-      <div
-        key={`${slotId}-${slot.updatedAt}`}
-        className="w-full min-w-0 animate-in fade-in duration-150"
-        data-canvas-slot={slotId}
+    <div style={frameStyle} className={x == null ? "relative" : undefined}>
+      <CanvasRenderGlow
+        active={glowing}
+        className="my-2 w-full min-w-0"
+        settleMs={480}
       >
-        <Renderer
-          library={lib}
-          response={normalizeSlotOpenui(slot.openui)}
-          isStreaming={false}
-        />
-      </div>
-    </CanvasRenderGlow>
+        <div
+          key={`${slotId}-${slot.updatedAt}`}
+          className="w-full min-w-0 animate-in fade-in duration-150"
+          data-canvas-slot={slotId}
+          data-canvas-no-pan
+        >
+          <Renderer
+            library={lib}
+            response={normalizeSlotOpenui(slot.openui)}
+            isStreaming={false}
+          />
+        </div>
+      </CanvasRenderGlow>
+    </div>
   )
 }
 
 const CanvasSlot = defineComponent({
   name: "CanvasSlot",
   description:
-    "Named OpenUI region for incremental canvas edits. Emit once in the shell Stack, then update via patch_canvas (kind=openui, widgetId=slotId, data.openui=fragment). Do NOT regenerate the whole Stack to change one panel.",
+    "Named OpenUI region for incremental canvas edits. Emit once in the shell Stack, then update via patch_canvas (kind=openui, widgetId=slotId, data.openui=fragment). Do NOT regenerate the whole Stack to change one panel. Optional x,y (px) for absolute placement on the infinite canvas.",
   props: z.object({
     slotId: z.string(),
+    x: z.number().optional(),
+    y: z.number().optional(),
   }),
-  component: ({ props }) => <CanvasSlotView slotId={props.slotId} />,
+  component: ({ props }) => (
+    <CanvasSlotView slotId={props.slotId} x={props.x} y={props.y} />
+  ),
+})
+
+const CanvasFrame = defineComponent({
+  name: "CanvasFrame",
+  description:
+    "Wrap OpenUI children at optional x,y (px) on the infinite canvas. Use for spatial layouts instead of a vertical Stack when panels should sit side-by-side.",
+  props: z.object({
+    x: z.number().optional(),
+    y: z.number().optional(),
+    children: z.array(z.any()),
+  }),
+  component: ({ props, renderNode }) => (
+    <div
+      style={canvasFrameStyle(props.x, props.y)}
+      className={props.x == null ? "relative" : undefined}
+      data-canvas-no-pan
+    >
+      {renderNode(props.children)}
+    </div>
+  ),
+})
+
+const BalanceBoard = defineComponent({
+  name: "BalanceBoard",
+  description:
+    "Multi-chain wallet balances. Pass rowsJson from get_wallet_balances tool (JSON array of {chainId,chainName,native,usdc,error?}).",
+  props: z.object({
+    title: z.string().optional(),
+    rowsJson: z.string(),
+  }),
+  component: ({ props }) => {
+    let rows: Array<{
+      chainId?: number
+      chainName?: string
+      native?: string
+      usdc?: string | null
+      error?: string
+    }> = []
+    try {
+      const parsed = JSON.parse(props.rowsJson)
+      if (Array.isArray(parsed)) rows = parsed
+    } catch {
+      rows = []
+    }
+    return (
+      <CardShell title={props.title || "Balances"}>
+        {rows.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No balance rows.</p>
+        ) : (
+          <div className="space-y-2">
+            {rows.map((r, i) => (
+              <div
+                key={`${r.chainId ?? i}`}
+                className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border/30 pb-2 text-xs last:border-0"
+              >
+                <span className="font-medium">
+                  {r.chainName || `Chain ${r.chainId ?? "?"}`}
+                </span>
+                {r.error ? (
+                  <span className="text-destructive">{r.error}</span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {r.native || "—"}
+                    {r.usdc ? ` · ${r.usdc}` : ""}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardShell>
+    )
+  },
+})
+
+const ConfirmSend = defineComponent({
+  name: "ConfirmSend",
+  description:
+    "Confirm a prepared transfer. Include preparedJson from prepare_transfer.",
+  props: z.object({
+    to: z.string(),
+    amount: z.string(),
+    chainId: z.number(),
+    token: z.string().optional(),
+    preparedJson: z.string().optional(),
+  }),
+  component: ({ props }) => (
+    <CardShell title="Confirm send">
+      <p className="text-sm">
+        Send {props.amount} {props.token || "native"} on chain {props.chainId}
+      </p>
+      <p className="mt-1 break-all font-mono text-[10px] text-muted-foreground">
+        to: {props.to}
+      </p>
+      <Button
+        type="button"
+        size="sm"
+        className="mt-3 h-8 text-xs"
+        onClick={() => {
+          window.dispatchEvent(
+            new CustomEvent("bloom:confirm-tx", {
+              detail: {
+                preparedJson: props.preparedJson || null,
+                summary: `Send ${props.amount} to ${props.to}`,
+              },
+            })
+          )
+        }}
+      >
+        Confirm &amp; send
+      </Button>
+    </CardShell>
+  ),
 })
 
 const TRADING_COMPONENTS = [
@@ -839,6 +1002,8 @@ const TRADING_COMPONENTS = [
   QuoteSummary,
   ApprovalCard,
   ConfirmTx,
+  ConfirmSend,
+  BalanceBoard,
   CostBreakdown,
   TxStatusCard,
   GaslessOrderCard,
@@ -852,6 +1017,7 @@ const TRADING_COMPONENTS = [
   LiveMarketChart,
   InflightTrade,
   CanvasSlot,
+  CanvasFrame,
   Root,
 ] as const
 
@@ -861,6 +1027,7 @@ const tradingComponentGroup: ComponentGroup = {
   notes: [
     "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
     "- Incremental canvas: shell Stack with CanvasSlot(\"id\"); updates via patch_canvas kind=openui — never full redraw for small changes.",
+    "- Spatial layout: CanvasFrame(x, y, [...]) or CanvasSlot(\"id\", x, y) for absolute placement on the pannable canvas.",
     "- Live dashboards: start_market_watch then LiveActivity + LiveMarketSwitcher + LiveMarketTick + LiveTradeTape.",
     "- Real-time ONLY when user asks: start_market_watch then emit Live* components in Stack.",
     "- Never assume live chrome exists outside OpenUI — the model must place Live* components.",
@@ -889,6 +1056,13 @@ live_slot = CanvasSlot("live")
 
 Then call patch_canvas replace widgetId=quote kind=openui data={{openui: "QuoteSummary(...)"}}
 and patch_canvas for live with LiveActivity / LiveTradeTape fragments. Later ticks: only patch_canvas — do not re-emit root Stack.`,
+    `Example — spatial canvas frames:
+
+root = Stack([quote_frame, live_frame])
+quote_frame = CanvasFrame(40, 80, [quote_slot])
+live_frame = CanvasFrame(520, 80, [live_slot])
+quote_slot = CanvasSlot("quote")
+live_slot = CanvasSlot("live")`,
     `Example — live real-time terminal (after start_market_watch):
 
 root = Stack([title, switcher, activity, tick, tape])

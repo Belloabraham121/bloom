@@ -22,13 +22,21 @@ function isNetworkDnsError(error: unknown): boolean {
   const cause =
     error instanceof Error ? (error as Error & { cause?: unknown }).cause : null
   const causeMsg = cause instanceof Error ? cause.message : String(cause || "")
-  const blob = `${msg} ${causeMsg}`
+  const causeCode =
+    cause && typeof cause === "object" && "code" in cause
+      ? String((cause as { code?: string }).code || "")
+      : ""
+  const blob = `${msg} ${causeMsg} ${causeCode}`
   return (
     blob.includes("ENOTFOUND") ||
     blob.includes("EAI_AGAIN") ||
     blob.includes("getaddrinfo") ||
     blob.includes("fetch failed") ||
-    blob.includes("CONNECT tunnel")
+    blob.includes("CONNECT tunnel") ||
+    blob.includes("ConnectTimeoutError") ||
+    blob.includes("UND_ERR_CONNECT_TIMEOUT") ||
+    blob.includes("TimeoutError") ||
+    blob.includes("aborted")
   )
 }
 
@@ -104,26 +112,27 @@ export async function pollSubgraphMarketOnce(
 }
 
 /**
- * Always refresh CoinGecko spot first (fills LiveMarketTick + chart).
+ * Always refresh spot price first (fills LiveMarketTick + chart).
  * Graph enrichment is best-effort and must not block price updates.
  */
 export async function pollMarketOnce(opts: PollMarketOpts = {}): Promise<{
   count: number
-  source: "graph+coingecko" | "coingecko" | "graph"
+  source: "graph+spot" | "spot" | "graph" | "none"
 }> {
   const chainId = opts.chainId ?? 1
 
-  // CoinGecko first so UI always gets a numeric price quickly
-  let cg = 0
+  let spot = 0
   try {
-    cg = await pollCoinGeckoPriceOnce({
+    spot = await pollCoinGeckoPriceOnce({
       chainId,
       symbol0: opts.symbol0,
       symbol1: opts.symbol1,
       userId: opts.userId,
     })
   } catch (error) {
-    console.warn("[market-poller] coingecko", error)
+    if (!isNetworkDnsError(error)) {
+      console.warn("[market-poller] spot", error)
+    }
   }
 
   let graphCount = 0
@@ -141,10 +150,13 @@ export async function pollMarketOnce(opts: PollMarketOpts = {}): Promise<{
     }
   }
 
-  if (cg > 0 && graphCount > 0) return { count: cg + graphCount, source: "graph+coingecko" }
-  if (cg > 0) return { count: cg, source: "coingecko" }
+  if (spot > 0 && graphCount > 0) {
+    return { count: spot + graphCount, source: "graph+spot" }
+  }
+  if (spot > 0) return { count: spot, source: "spot" }
   if (graphCount > 0) return { count: graphCount, source: "graph" }
-  throw new Error("No market data from CoinGecko or The Graph")
+  // Soft fail — keep poller alive; UI retains last tick
+  return { count: 0, source: "none" }
 }
 
 /**
@@ -167,17 +179,28 @@ export function startMarketPoller(opts: {
   const tick = async () => {
     if (stopped) return
     try {
-      await pollMarketOnce({
+      const result = await pollMarketOnce({
         chainId,
         symbol0: opts.symbol0,
         symbol1: opts.symbol1,
         userId: opts.userId,
       })
-      failStreak = 0
+      if (result.count > 0) {
+        failStreak = 0
+      } else {
+        failStreak += 1
+        const now = Date.now()
+        if (now - lastWarnAt > 45_000) {
+          lastWarnAt = now
+          console.warn(
+            "[market-poller] no price sources reachable (CoinGecko / DefiLlama / Binance / Graph) — check network/VPN"
+          )
+        }
+      }
     } catch (error) {
       failStreak += 1
       const now = Date.now()
-      if (now - lastWarnAt > 30_000) {
+      if (now - lastWarnAt > 45_000) {
         lastWarnAt = now
         console.warn("[market-poller]", error)
       }

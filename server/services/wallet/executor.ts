@@ -42,6 +42,7 @@ export type PreparedTx = {
   uniswapRequestId?: string | null
   missionId?: string
   conversationId?: string | null
+  tradeIntentId?: string | null
 }
 
 function extractTxFields(payload: unknown): {
@@ -107,21 +108,23 @@ export async function executePreparedTx(params: {
     chainId: params.prepared.chainId,
   }
 
-  if (!to || !data || !chainId) {
-    return { ok: false, error: "Prepared transaction missing to/data/chainId" }
+  if (!to || chainId == null) {
+    return { ok: false, error: "Prepared transaction missing to/chainId" }
   }
+  const txData = data && data !== "" ? data : "0x"
 
   const row = await insertTransaction({
     userId: params.userId,
     walletId: wallet.id,
     conversationId: params.prepared.conversationId ?? null,
+    tradeIntentId: params.prepared.tradeIntentId ?? null,
     category: params.prepared.category || "swap",
     status: "signing",
     chainId,
     toAddress: to,
     fromAddress: wallet.address,
     value: value || "0x0",
-    calldata: data,
+    calldata: txData,
     uniswapRequestId: params.prepared.uniswapRequestId ?? null,
     requestPayload: params.prepared.requestPayload,
     responsePayload: params.prepared.responsePayload,
@@ -158,7 +161,7 @@ export async function executePreparedTx(params: {
       caip2: caip2(chainId),
       transaction: {
         to: to as `0x${string}`,
-        data: data as `0x${string}`,
+        data: txData as `0x${string}`,
         value: (value || "0x0") as `0x${string}`,
         chainId,
       },

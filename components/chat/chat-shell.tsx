@@ -8,6 +8,7 @@ import { Composer, type AIModel } from "./composer"
 import { ConversationsSidebar } from "./conversations-sidebar"
 import { SettingsPopover } from "./settings-popover"
 import { LiveFeedProvider } from "./live-feed-context"
+import { TransactionHub } from "./transaction-hub"
 import { useMissionLive } from "./use-mission-live"
 import { Button } from "@/components/ui/button"
 import { usePrivy } from "@privy-io/react-auth"
@@ -416,6 +417,47 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
     if (!isStreaming) void refreshLiveStatus()
   }, [isStreaming, refreshLiveStatus])
 
+  useEffect(() => {
+    const onConfirm = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ preparedJson?: string | null }>)
+        .detail
+      const raw = detail?.preparedJson
+      if (!raw) return
+      void (async () => {
+        try {
+          const prepared = JSON.parse(raw) as {
+            chainId: number
+            to: string
+            data?: string
+            value?: string
+            category?: string
+            tradeIntentId?: string
+          }
+          const token = await getAccessToken()
+          if (!token) return
+          await fetch("/api/wallet/execute", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              ...prepared,
+              data: prepared.data || "0x",
+              conversationId: activeId,
+              requireAutonomous: false,
+            }),
+          })
+          void refreshLiveStatus()
+        } catch (e) {
+          console.error("confirm-tx failed", e)
+        }
+      })()
+    }
+    window.addEventListener("bloom:confirm-tx", onConfirm)
+    return () => window.removeEventListener("bloom:confirm-tx", onConfirm)
+  }, [getAccessToken, activeId, refreshLiveStatus])
+
   const handleOpenUIAction = useCallback(
     (event: ActionEvent) => {
       if (event.type === BuiltinActionType.OpenUrl) {
@@ -554,6 +596,16 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
         onShellDocument={syncCanvasShell}
         topOffsetClassName="pt-16"
         bottomOffsetClassName="pb-44 sm:pb-48"
+      />
+
+      {/* Floating transaction hub — screen space, not canvas */}
+      <TransactionHub
+        getAccessToken={getAccessToken}
+        liveActive={feedLiveActive}
+        working={working}
+        tapeRows={tapeRows}
+        agentEvents={agentEvents}
+        missionAction={missionAction}
       />
 
       {/* Bottom chat: transcript above input */}

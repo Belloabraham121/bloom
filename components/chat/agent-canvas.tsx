@@ -8,11 +8,12 @@ import { bloomLibrary } from "@/lib/openui/bloom-library"
 import { looksLikeOpenUI, resolveCanvasDocument } from "@/lib/openui/detect"
 import type { Message } from "./chat-shell"
 import { AnimatedOrb } from "./animated-orb"
-import { CanvasRenderGlow } from "./canvas-render-glow"
+import { CanvasRenderGlow } from "@/lib/openui/canvas-render-glow"
 import { TypingIndicator } from "./typing-indicator"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useCanvasShell } from "./live-feed-context"
+import { InfiniteCanvasStage } from "./infinite-canvas-stage"
 
 interface AgentCanvasProps {
   messages: Message[]
@@ -135,10 +136,10 @@ export function AgentCanvas({
   return (
     <div
       className={cn(
-        "absolute inset-0 overflow-y-auto bg-background",
+        "absolute inset-0 bg-background",
+        document ? "overflow-hidden" : "overflow-y-auto px-4 sm:px-6",
         topOffsetClassName,
-        bottomOffsetClassName,
-        "px-4 sm:px-6"
+        bottomOffsetClassName
       )}
       role="main"
       aria-label="Agent canvas"
@@ -183,9 +184,12 @@ export function AgentCanvas({
       )}
 
       {document && (
-        <div className="relative mx-auto w-full max-w-[min(100%,72rem)]">
+        <InfiniteCanvasStage
+          conversationKey={conversationKey ?? undefined}
+          className="h-full w-full"
+        >
           {(waitingForCanvasUpdate || document.isStreaming) && (
-            <div className="mb-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+            <div className="pointer-events-none mb-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
               <AnimatedOrb size={20} glow />
               <span>
                 {document.isStreaming ? "Rendering canvas…" : "Updating canvas…"}
@@ -196,6 +200,7 @@ export function AgentCanvas({
             <section
               key="living-canvas"
               className="w-full min-w-0 animate-in fade-in rounded-2xl duration-200"
+              data-canvas-no-pan
             >
               <ThemeProvider mode="dark" cssSelector=".openui-bloom">
                 <div className="openui-bloom w-full min-w-0 p-1 [&_.recharts-responsive-container]:!w-full">
@@ -209,11 +214,11 @@ export function AgentCanvas({
               </ThemeProvider>
             </section>
           </CanvasRenderGlow>
-        </div>
+        </InfiniteCanvasStage>
       )}
 
       {error && (
-        <div className="relative mx-auto mt-4 w-full max-w-2xl">
+        <div className="relative mx-auto mt-4 w-full max-w-2xl px-4 sm:px-6">
           <div
             className="flex items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-4"
             role="alert"
