@@ -436,13 +436,21 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
     working,
     tapeRows,
     lastTick,
+    canvasModel,
     missionAction,
     refreshLiveStatus,
+    syncCanvasShell,
   } = useMissionLive({
     conversationId: activeId,
     chainId: 1,
     refreshKey: messages.length,
   })
+
+  const liveFromCanvas = Boolean(
+    (canvasModel?.widgets?._live?.props as { active?: boolean } | undefined)
+      ?.active
+  )
+  const feedLiveActive = liveActive || liveFromCanvas
 
   useEffect(() => {
     if (!isStreaming) void refreshLiveStatus()
@@ -451,12 +459,13 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   return (
     <LiveFeedProvider
       value={{
-        liveActive,
+        liveActive: feedLiveActive,
         working,
         events: agentEvents,
         tapeRows,
         lastTick,
         missionAction,
+        canvasModel,
       }}
     >
     <div className="relative h-dvh overflow-hidden bg-background">
@@ -528,6 +537,7 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
         username={displayName}
         onOpenUIAction={handleOpenUIAction}
         conversationKey={activeId}
+        onShellDocument={syncCanvasShell}
         topOffsetClassName="pt-16"
         bottomOffsetClassName="pb-44 sm:pb-48"
       />

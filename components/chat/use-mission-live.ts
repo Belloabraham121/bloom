@@ -10,13 +10,22 @@ import {
   emptyCanvas,
   type CanvasModel,
   type CanvasPatchOp,
+  type WidgetKind,
 } from "@/server/services/canvas/model"
 
+function toClientModel(canvas: CanvasModel): ClientCanvasModel {
+  return {
+    layout: canvas.layout || [],
+    widgets: canvas.widgets || {},
+    openuiDocument: canvas.openuiDocument ?? null,
+    revision: canvas.revision || 0,
+  }
+}
+
 export function useMissionLive(opts: {
-  /** When false, no SSE and no live widgets — wait until agent starts real-time. */
   conversationId?: string | null
   chainId?: number
-  /** Bump after chat turns so we re-check live-status */
+  /** Bump after chat turns so we re-check live-status + canvas */
   refreshKey?: number | string
 }) {
   const { getAccessToken } = usePrivy()
@@ -27,7 +36,8 @@ export function useMissionLive(opts: {
   const [tapeRows, setTapeRows] = useState<TradeTapeRow[]>([])
   const [lastTick, setLastTick] = useState<Record<string, unknown> | null>(null)
   const [canvasModel, setCanvasModel] = useState<ClientCanvasModel | null>(null)
-  const esRef = useRef<EventSource | null>(null)
+  const marketEsRef = useRef<EventSource | null>(null)
+  const canvasEsRef = useRef<EventSource | null>(null)
 
   const applyPatchLocal = useCallback(
     (patch: CanvasPatchOp) => {
@@ -42,16 +52,36 @@ export function useMissionLive(opts: {
             }
           : emptyCanvas(opts.conversationId ?? null)
         const next = applyCanvasPatch(base, patch)
-        return {
-          layout: next.layout,
-          widgets: next.widgets,
-          openuiDocument: next.openuiDocument,
-          revision: next.revision,
-        }
+        return toClientModel(next)
       })
     },
     [opts.conversationId]
   )
+
+  const refreshCanvas = useCallback(async () => {
+    const token = await getAccessToken()
+    if (!token) return
+    try {
+      const canvasRes = await fetch(
+        `/api/canvas?conversationId=${encodeURIComponent(opts.conversationId || "")}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (canvasRes.ok) {
+        const data = await canvasRes.json()
+        if (data.canvas) {
+          setCanvasModel(toClientModel(data.canvas))
+          const liveWidget = data.canvas.widgets?._live
+          const props = liveWidget?.props as Record<string, unknown> | undefined
+          if (props?.active) {
+            setLiveActive(true)
+            if (props.missionId) setActiveMissionId(String(props.missionId))
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [getAccessToken, opts.conversationId])
 
   const refreshLiveStatus = useCallback(async () => {
     const token = await getAccessToken()
@@ -83,7 +113,12 @@ export function useMissionLive(opts: {
     }
   }, [getAccessToken])
 
-  // Poll live-status (agent may start a session mid-chat)
+  // Load canvas whenever conversation changes / after chat turns
+  useEffect(() => {
+    void refreshCanvas()
+  }, [refreshCanvas, opts.refreshKey])
+
+  // Poll live-status
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -99,11 +134,90 @@ export function useMissionLive(opts: {
     }
   }, [refreshLiveStatus, opts.refreshKey, opts.conversationId])
 
-  // Connect SSE only while a live session exists
+  // Always-on canvas patch SSE (incremental OpenUI slots)
+  useEffect(() => {
+    let cancelled = false
+
+    void (async () => {
+      const token = await getAccessToken()
+      if (!token || cancelled) return
+
+      const url = `/api/canvas/live?conversationId=${encodeURIComponent(opts.conversationId || "")}&access_token=${encodeURIComponent(token)}`
+      const es = new EventSource(url)
+      canvasEsRef.current = es
+
+      es.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as {
+            type: string
+            op?: CanvasPatchOp["op"]
+            widgetId?: string
+            path?: string
+            kind?: WidgetKind
+            openuiDocument?: string | null
+            data?: unknown
+          }
+          if (msg.type !== "canvas_patch" || !msg.op) return
+
+          applyPatchLocal({
+            op: msg.op,
+            widgetId: msg.widgetId,
+            path: msg.path,
+            kind: msg.kind,
+            openuiDocument: msg.openuiDocument,
+            data: msg.data,
+          })
+
+          // start_market_watch publishes _live — flip liveActive without waiting on Redis/poll
+          if (msg.widgetId === "_live") {
+            const data = (msg.data || {}) as Record<string, unknown>
+            if (data.active === false) {
+              setLiveActive(false)
+              setWorking(false)
+            } else if (data.active) {
+              setLiveActive(true)
+              setWorking(true)
+              if (data.missionId) setActiveMissionId(String(data.missionId))
+              void refreshLiveStatus()
+            }
+          }
+
+          if (msg.widgetId === "trade_tape" && msg.data) {
+            const data = msg.data as Record<string, unknown>
+            const row: TradeTapeRow = {
+              id: String(msg.path || `${Date.now()}`),
+              side: String(data.side || data.status || "swap"),
+              status: String(data.status || "update"),
+              txHash: data.txHash ? String(data.txHash) : undefined,
+              chainId: Number(data.chainId || opts.chainId || 1),
+              at: new Date().toISOString(),
+            }
+            setTapeRows((prev) => [row, ...prev].slice(0, 40))
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      canvasEsRef.current?.close()
+      canvasEsRef.current = null
+    }
+  }, [
+    opts.conversationId,
+    opts.chainId,
+    getAccessToken,
+    applyPatchLocal,
+    refreshLiveStatus,
+  ])
+
+  // Market / agent SSE only while a live session exists
   useEffect(() => {
     if (!liveActive) {
-      esRef.current?.close()
-      esRef.current = null
+      marketEsRef.current?.close()
+      marketEsRef.current = null
       return
     }
 
@@ -113,32 +227,11 @@ export function useMissionLive(opts: {
       const token = await getAccessToken()
       if (!token || cancelled) return
 
-      try {
-        const canvasRes = await fetch(
-          `/api/canvas?conversationId=${encodeURIComponent(opts.conversationId || "")}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        )
-        if (canvasRes.ok) {
-          const data = await canvasRes.json()
-          if (data.canvas) {
-            setCanvasModel({
-              layout: data.canvas.layout || [],
-              widgets: data.canvas.widgets || {},
-              openuiDocument: data.canvas.openuiDocument,
-              revision: data.canvas.revision || 0,
-            })
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-
       const url = `/api/missions/live?chainId=${opts.chainId || 1}&access_token=${encodeURIComponent(token)}`
       const es = new EventSource(url)
-      esRef.current = es
+      marketEsRef.current = es
 
       es.onerror = () => {
-        // Session may have ended
         void refreshLiveStatus()
       }
 
@@ -153,6 +246,8 @@ export function useMissionLive(opts: {
             op?: CanvasPatchOp["op"]
             widgetId?: string
             path?: string
+            kind?: WidgetKind
+            openuiDocument?: string | null
             data?: unknown
             payload?: Record<string, unknown>
           }
@@ -204,27 +299,7 @@ export function useMissionLive(opts: {
             }
           }
 
-          if (msg.type === "canvas_patch" && msg.op) {
-            applyPatchLocal({
-              op: msg.op,
-              widgetId: msg.widgetId,
-              path: msg.path,
-              data: msg.data,
-            })
-            // Keep OpenUI LiveTradeTape in sync (no fixed widget host)
-            if (msg.widgetId === "trade_tape" && msg.data) {
-              const data = msg.data as Record<string, unknown>
-              const row: TradeTapeRow = {
-                id: String(msg.path || `${Date.now()}`),
-                side: String(data.side || data.status || "swap"),
-                status: String(data.status || "update"),
-                txHash: data.txHash ? String(data.txHash) : undefined,
-                chainId: Number(data.chainId || opts.chainId || 1),
-                at: new Date().toISOString(),
-              }
-              setTapeRows((prev) => [row, ...prev].slice(0, 40))
-            }
-          }
+          // canvas_patch handled by always-on /api/canvas/live
 
           if (msg.type === "market") {
             setLastTick(msg as unknown as Record<string, unknown>)
@@ -244,8 +319,8 @@ export function useMissionLive(opts: {
 
     return () => {
       cancelled = true
-      esRef.current?.close()
-      esRef.current = null
+      marketEsRef.current?.close()
+      marketEsRef.current = null
     }
   }, [
     liveActive,
@@ -256,15 +331,48 @@ export function useMissionLive(opts: {
     refreshLiveStatus,
   ])
 
-  // Clear live UI when session ends
+  // Clear live market UI when session ends — keep canvas slots/shell
   useEffect(() => {
     if (liveActive) return
     setWorking(false)
     setAgentEvents([])
     setTapeRows([])
     setLastTick(null)
-    setCanvasModel(null)
   }, [liveActive])
+
+  // After each chat turn, re-check live status (tool may have started watch mid-turn)
+  useEffect(() => {
+    if (opts.refreshKey == null) return
+    void refreshLiveStatus()
+    void refreshCanvas()
+  }, [opts.refreshKey, refreshLiveStatus, refreshCanvas])
+
+  const syncCanvasShell = useCallback(
+    async (openuiDocument: string) => {
+      const token = await getAccessToken()
+      if (!token || !openuiDocument.trim()) return
+      try {
+        const res = await fetch("/api/canvas", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            conversationId: opts.conversationId,
+            patch: { op: "full", openuiDocument },
+          }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.canvas) setCanvasModel(toClientModel(data.canvas))
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [getAccessToken, opts.conversationId]
+  )
 
   const missionAction = useCallback(
     async (action: string, missionId?: string | null) => {
@@ -298,5 +406,7 @@ export function useMissionLive(opts: {
     setCanvasModel,
     missionAction,
     refreshLiveStatus,
+    refreshCanvas,
+    syncCanvasShell,
   }
 }

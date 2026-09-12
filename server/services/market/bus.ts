@@ -1,8 +1,14 @@
 /**
  * Pub/sub + recent buffer for market ticks, agent events, and canvas patches.
+ * In-process EventEmitter always works; Redis is best-effort for multi-instance.
  */
 
-import { ensureRedisConnected, getRedis, getRedisSubscriber } from "@/server/services/redis/client"
+import { EventEmitter } from "events"
+import {
+  ensureRedisConnected,
+  getRedis,
+  getRedisSubscriber,
+} from "@/server/services/redis/client"
 
 export type MarketEvent = {
   type: "market"
@@ -48,6 +54,9 @@ export type CanvasPatch = {
   op: "set" | "replace" | "insert" | "remove" | "full"
   widgetId?: string
   path?: string
+  kind?: string
+  openuiDocument?: string | null
+  revision?: number
   data?: unknown
   at: string
 }
@@ -66,16 +75,35 @@ function recentKey(channel: string) {
   return `bloom:recent:${channel}`
 }
 
-async function publish(channel: string, message: BusMessage) {
-  const redis = getRedis()
-  await ensureRedisConnected(redis)
-  const raw = JSON.stringify(message)
-  await redis.publish(channel, raw)
-  await redis.lpush(recentKey(channel), raw)
-  await redis.ltrim(recentKey(channel), 0, 99)
+const localBus = new EventEmitter()
+localBus.setMaxListeners(200)
+const recentMemory = new Map<string, string[]>()
+
+function pushRecent(channel: string, raw: string) {
+  const list = recentMemory.get(channel) || []
+  list.unshift(raw)
+  recentMemory.set(channel, list.slice(0, 100))
 }
 
-export async function publishMarketEvent(event: Omit<MarketEvent, "type" | "at"> & { at?: string }) {
+async function publish(channel: string, message: BusMessage) {
+  const raw = JSON.stringify(message)
+  pushRecent(channel, raw)
+  localBus.emit(channel, message)
+
+  try {
+    const redis = getRedis()
+    await ensureRedisConnected(redis)
+    await redis.publish(channel, raw)
+    await redis.lpush(recentKey(channel), raw)
+    await redis.ltrim(recentKey(channel), 0, 99)
+  } catch (error) {
+    console.warn("[market-bus] redis publish failed — local only", error)
+  }
+}
+
+export async function publishMarketEvent(
+  event: Omit<MarketEvent, "type" | "at"> & { at?: string }
+) {
   const full: MarketEvent = {
     type: "market",
     at: event.at ?? new Date().toISOString(),
@@ -109,11 +137,12 @@ export async function publishCanvasPatch(
   return full
 }
 
-export async function getRecentMessages(channel: string, limit = 30): Promise<BusMessage[]> {
-  const redis = getRedis()
-  await ensureRedisConnected(redis)
-  const rows = await redis.lrange(recentKey(channel), 0, limit - 1)
-  return rows
+export async function getRecentMessages(
+  channel: string,
+  limit = 30
+): Promise<BusMessage[]> {
+  const fromMemory = (recentMemory.get(channel) || [])
+    .slice(0, limit)
     .map((r) => {
       try {
         return JSON.parse(r) as BusMessage
@@ -122,6 +151,26 @@ export async function getRecentMessages(channel: string, limit = 30): Promise<Bu
       }
     })
     .filter(Boolean) as BusMessage[]
+
+  try {
+    const redis = getRedis()
+    await ensureRedisConnected(redis)
+    const rows = await redis.lrange(recentKey(channel), 0, limit - 1)
+    const fromRedis = rows
+      .map((r) => {
+        try {
+          return JSON.parse(r) as BusMessage
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean) as BusMessage[]
+    if (fromRedis.length) return fromRedis
+  } catch {
+    /* redis optional */
+  }
+
+  return fromMemory
 }
 
 export async function getRecentMarketEvents(chainId: number, limit = 30) {
@@ -136,29 +185,51 @@ export async function getRecentAgentEvents(userId: string, limit = 30) {
 
 /**
  * Subscribe to channels; returns unsubscribe fn.
- * Handler is called for each message (and optionally primed with recent).
+ * Always listens in-process; Redis subscribe is best-effort.
  */
 export async function subscribeChannels(
   channels: string[],
   onMessage: (channel: string, message: BusMessage) => void
 ): Promise<() => Promise<void>> {
-  const sub = getRedisSubscriber()
-  await ensureRedisConnected(sub)
+  const localHandlers: Array<{ channel: string; fn: (msg: BusMessage) => void }> =
+    []
 
-  const handler = (channel: string, raw: string) => {
-    try {
-      onMessage(channel, JSON.parse(raw) as BusMessage)
-    } catch {
-      /* ignore bad payloads */
-    }
+  for (const channel of channels) {
+    const fn = (msg: BusMessage) => onMessage(channel, msg)
+    localBus.on(channel, fn)
+    localHandlers.push({ channel, fn })
   }
 
-  sub.on("message", handler)
-  if (channels.length) await sub.subscribe(...channels)
+  let redisCleanup: (() => Promise<void>) | null = null
+  try {
+    const sub = getRedisSubscriber()
+    await ensureRedisConnected(sub)
+
+    const handler = (channel: string, raw: string) => {
+      if (!channels.includes(channel)) return
+      try {
+        onMessage(channel, JSON.parse(raw) as BusMessage)
+      } catch {
+        /* ignore */
+      }
+    }
+
+    sub.on("message", handler)
+    if (channels.length) await sub.subscribe(...channels)
+
+    redisCleanup = async () => {
+      sub.off("message", handler)
+      if (channels.length) await sub.unsubscribe(...channels)
+    }
+  } catch (error) {
+    console.warn("[market-bus] redis subscribe failed — local only", error)
+  }
 
   return async () => {
-    sub.off("message", handler)
-    if (channels.length) await sub.unsubscribe(...channels)
+    for (const { channel, fn } of localHandlers) {
+      localBus.off(channel, fn)
+    }
+    await redisCleanup?.()
   }
 }
 

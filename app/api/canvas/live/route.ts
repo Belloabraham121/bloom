@@ -3,73 +3,50 @@ import { requirePrivyUserFromRequest } from "@/server/lib/auth-sse"
 import {
   agentChannel,
   getRecentAgentEvents,
-  marketChannel,
-  getRecentMarketEvents,
   subscribeChannels,
   type BusMessage,
+  type CanvasPatch,
 } from "@/server/services/market/bus"
-import { getLiveSession } from "@/server/services/market/live-session"
-import { listMissionsForUser } from "@/server/services/missions/repo"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
+/**
+ * Always-on SSE for incremental canvas patches (no live market session required).
+ */
 export async function GET(request: Request) {
   try {
     const user = await requirePrivyUserFromRequest(request)
-    const session = await getLiveSession(user.id)
-    let running: Awaited<ReturnType<typeof listMissionsForUser>> = []
-    try {
-      const missions = await listMissionsForUser(user.id, 10)
-      running = missions.filter((m) => m.status === "running")
-    } catch {
-      running = []
-    }
-
-    // Allow SSE if session OR a running mission (works across instances via DB)
-    if (!session && running.length === 0) {
-      return NextResponse.json(
-        { error: "No live session. Ask the agent to start real-time data first." },
-        { status: 404 }
-      )
-    }
-
     const url = new URL(request.url)
-    const paramChain = Number(url.searchParams.get("chainId") || 0)
-    const missionChain = Number(
-      (running[0]?.params as { chainId?: number } | null)?.chainId || 0
-    )
-    const chainId = paramChain || session?.chainId || missionChain || 1
+    const conversationId = url.searchParams.get("conversationId")
 
     const encoder = new TextEncoder()
     let cleanup: (() => Promise<void>) | null = null
     let closed = false
 
+    const matchesConversation = (msg: CanvasPatch) => {
+      if (!conversationId) return true
+      const cid = msg.conversationId ?? null
+      return cid === conversationId || cid === null
+    }
+
     const stream = new ReadableStream({
       async start(controller) {
         const send = (msg: BusMessage) => {
           if (closed) return
+          if (msg.type !== "canvas_patch") return
+          if (!matchesConversation(msg)) return
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(msg)}\n\n`))
         }
 
-        const recentAgent = await getRecentAgentEvents(user.id, 20)
-        for (const m of recentAgent.reverse()) send(m)
-        const recentMarket = await getRecentMarketEvents(chainId, 10)
-        for (const m of recentMarket.reverse()) send(m)
+        const recent = await getRecentAgentEvents(user.id, 40)
+        for (const m of recent.reverse()) {
+          if (m.type === "canvas_patch") send(m)
+        }
 
-        cleanup = await subscribeChannels(
-          [agentChannel(user.id), marketChannel(chainId)],
-          (_ch, message) => send(message)
+        cleanup = await subscribeChannels([agentChannel(user.id)], (_ch, message) =>
+          send(message)
         )
-
-        // Keep ticks flowing even if background ingest died (serverless)
-        const { pollSubgraphMarketOnce } = await import(
-          "@/server/services/substreams/poller"
-        )
-        void pollSubgraphMarketOnce(chainId).catch(() => {})
-        const pollTimer = setInterval(() => {
-          void pollSubgraphMarketOnce(chainId).catch(() => {})
-        }, 10_000)
 
         const heartbeat = setInterval(() => {
           if (closed) return
@@ -80,7 +57,6 @@ export async function GET(request: Request) {
           if (closed) return
           closed = true
           clearInterval(heartbeat)
-          clearInterval(pollTimer)
           void cleanup?.()
           try {
             controller.close()

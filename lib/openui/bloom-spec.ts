@@ -234,6 +234,16 @@ const InflightTrade = defineComponent({
   component: noop,
 })
 
+const CanvasSlot = defineComponent({
+  name: "CanvasSlot",
+  description:
+    "Named OpenUI region for incremental edits. Place in shell Stack once; update via patch_canvas kind=openui widgetId=slotId. Do not regenerate the whole Stack for small changes.",
+  props: z.object({
+    slotId: z.string(),
+  }),
+  component: noop,
+})
+
 const TRADING_COMPONENTS = [
   MessageText,
   TokenRow,
@@ -253,6 +263,7 @@ const TRADING_COMPONENTS = [
   LiveTradeTape,
   LiveMarketTick,
   InflightTrade,
+  CanvasSlot,
   Root,
 ]
 
@@ -261,6 +272,7 @@ const tradingComponentGroup: ComponentGroup = {
   components: TRADING_COMPONENTS.map((c) => c.name),
   notes: [
     "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
+    "- Incremental: CanvasSlot(\"id\") in shell + patch_canvas kind=openui for updates.",
     "- Real-time: start_market_watch then LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade in Stack.",
     "- Never assume fixed chat chrome for live UI.",
     "- Token discovery → TokenList + TokenRow. Chains → ChainList + ChainRow.",
@@ -280,6 +292,14 @@ caption = TextContent("Quote ready", "large-heavy")
 quote = QuoteSummary("USDC", "WETH", "100", "0.04", "CLASSIC", "1.20", "Ethereum")
 cost = CostBreakdown("1.20")
 confirm = ConfirmTx("Confirm swap", "Swap 100 USDC for ~0.04 WETH on Ethereum", null, true)`,
+    `Example — incremental canvas shell:
+
+root = Stack([title, quote_slot, live_slot])
+title = TextContent("Trading desk", "large-heavy")
+quote_slot = CanvasSlot("quote")
+live_slot = CanvasSlot("live")
+
+Then patch_canvas replace widgetId=quote kind=openui data={{openui:"QuoteSummary(...)"}}. Later: only patch_canvas.`,
     `Example — live real-time (after start_market_watch):
 
 root = Stack([title, activity, tick, tape])
@@ -306,6 +326,7 @@ s1 = Series("TVL", tvls)`,
   additionalRules: [
     ...(basePromptOptions.additionalRules ?? []),
     "Every program must start with root = Stack([...]). Do not use Root(...).",
+    "Prefer CanvasSlot + patch_canvas for incremental updates; full Stack only for first paint or major layout changes.",
     "Live UI must be OpenUI LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade after start_market_watch — never fixed chrome.",
     "For Uniswap trading flows prefer Trading components (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry, etc.).",
     "When a tool returns logoUrl, pass it as TokenRow's fourth argument so the icon renders.",
@@ -316,7 +337,7 @@ s1 = Series("TVL", tvls)`,
 }
 
 const tradingSpec = createLibrary({
-  id: "bloom-trading-only@3",
+  id: "bloom-trading-only@4",
   root: "MessageText",
   components: TRADING_COMPONENTS,
 }).toSpec()

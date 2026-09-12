@@ -9,10 +9,12 @@ import {
   openuiPromptOptions,
 } from "@openuidev/react-ui/genui-lib"
 import { z } from "zod/v4"
-import { useLiveFeed } from "@/components/chat/live-feed-context"
+import { useLiveFeed, useCanvasSlot } from "@/components/chat/live-feed-context"
 import { AnimatedOrb } from "@/components/chat/animated-orb"
 import { Button } from "@/components/ui/button"
 import { Pause, Play, Square } from "lucide-react"
+import { Renderer } from "@openuidev/react-lang"
+import { normalizeSlotOpenui } from "@/server/services/canvas/model"
 
 function CardShell({
   title,
@@ -393,8 +395,7 @@ function LiveActivityView({ title }: { title?: string }) {
     <CardShell title={title || "Live agent activity"}>
       {!liveActive ? (
         <p className="text-xs text-muted-foreground">
-          Live session inactive — call start_market_watch when the user asks for
-          real-time data.
+          Waiting for live session… (ask again if this stays empty)
         </p>
       ) : (
         <>
@@ -478,7 +479,7 @@ function LiveTradeTapeView({ title }: { title?: string }) {
   return (
     <CardShell title={title || "Live trade tape"}>
       {!liveActive ? (
-        <p className="text-xs text-muted-foreground">No live session.</p>
+        <p className="text-xs text-muted-foreground">Waiting for live session…</p>
       ) : tapeRows.length === 0 ? (
         <p className="text-xs text-muted-foreground">Waiting for trades…</p>
       ) : (
@@ -526,7 +527,7 @@ function LiveMarketTickView({ title }: { title?: string }) {
     <CardShell title={title || "Live market tick"}>
       {!liveActive || !lastTick ? (
         <p className="text-xs text-muted-foreground">
-          {liveActive ? "Waiting for ticks…" : "No live session."}
+          {liveActive ? "Waiting for ticks…" : "Waiting for live session…"}
         </p>
       ) : (
         <p className="text-sm text-foreground">
@@ -584,6 +585,50 @@ const InflightTrade = defineComponent({
   component: ({ props }) => <InflightTradeView title={props.title} />,
 })
 
+/** Filled by createLibrary below — nested slot Renderer uses the same library. */
+let bloomLibraryRef: ReturnType<typeof createLibrary> | null = null
+
+function CanvasSlotView({ slotId }: { slotId: string }) {
+  const slot = useCanvasSlot(slotId)
+  const lib = bloomLibraryRef
+  if (!slot?.openui) {
+    return (
+      <div className="my-2 rounded-xl border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-[11px] text-muted-foreground">
+        Slot <span className="font-mono text-foreground/70">{slotId}</span> —
+        waiting for patch_canvas…
+      </div>
+    )
+  }
+  if (!lib) {
+    return (
+      <div className="text-[11px] text-muted-foreground">Loading slot…</div>
+    )
+  }
+  return (
+    <div
+      key={`${slotId}-${slot.updatedAt}`}
+      className="w-full min-w-0 animate-in fade-in duration-150"
+      data-canvas-slot={slotId}
+    >
+      <Renderer
+        library={lib}
+        response={normalizeSlotOpenui(slot.openui)}
+        isStreaming={false}
+      />
+    </div>
+  )
+}
+
+const CanvasSlot = defineComponent({
+  name: "CanvasSlot",
+  description:
+    "Named OpenUI region for incremental canvas edits. Emit once in the shell Stack, then update via patch_canvas (kind=openui, widgetId=slotId, data.openui=fragment). Do NOT regenerate the whole Stack to change one panel.",
+  props: z.object({
+    slotId: z.string(),
+  }),
+  component: ({ props }) => <CanvasSlotView slotId={props.slotId} />,
+})
+
 const TRADING_COMPONENTS = [
   MessageText,
   TokenRow,
@@ -603,6 +648,7 @@ const TRADING_COMPONENTS = [
   LiveTradeTape,
   LiveMarketTick,
   InflightTrade,
+  CanvasSlot,
   Root,
 ] as const
 
@@ -611,6 +657,7 @@ const tradingComponentGroup: ComponentGroup = {
   components: TRADING_COMPONENTS.map((c) => c.name),
   notes: [
     "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
+    "- Incremental canvas: shell Stack with CanvasSlot(\"id\"); updates via patch_canvas kind=openui — never full redraw for small changes.",
     "- Real-time ONLY when user asks: start_market_watch then emit LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade in Stack.",
     "- Never assume live chrome exists outside OpenUI — the model must place Live* components.",
     "- Token discovery → TokenList + TokenRow. Chains → ChainList + ChainRow.",
@@ -628,6 +675,15 @@ caption = TextContent("Quote ready", "large-heavy")
 quote = QuoteSummary("USDC", "WETH", "100", "0.04", "CLASSIC", "1.20", "Ethereum")
 cost = CostBreakdown("1.20")
 confirm = ConfirmTx("Confirm swap", "Swap 100 USDC for ~0.04 WETH on Ethereum", null, true)`,
+    `Example — incremental canvas shell (first paint):
+
+root = Stack([title, quote_slot, live_slot])
+title = TextContent("Trading desk", "large-heavy")
+quote_slot = CanvasSlot("quote")
+live_slot = CanvasSlot("live")
+
+Then call patch_canvas replace widgetId=quote kind=openui data={{openui: "QuoteSummary(...)"}}
+and patch_canvas for live with LiveActivity / LiveTradeTape fragments. Later ticks: only patch_canvas — do not re-emit root Stack.`,
     `Example — live real-time terminal (after start_market_watch):
 
 root = Stack([title, activity, tick, tape])
@@ -648,6 +704,7 @@ s1 = Series("TVL", tvls)`,
   additionalRules: [
     ...(openuiPromptOptions.additionalRules ?? []),
     "Every program must start with root = Stack([...]). Do not use Root(...).",
+    "Prefer CanvasSlot + patch_canvas for incremental updates; only emit a new full Stack for first paint or major layout changes.",
     "Live UI must be OpenUI LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade — never assume fixed chat chrome.",
     "Only after start_market_watch or start_mission when the user asked for real-time.",
     "For Uniswap trading flows prefer Trading components (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry, etc.).",
@@ -658,7 +715,7 @@ s1 = Series("TVL", tvls)`,
 }
 
 export const bloomLibrary = createLibrary({
-  id: "bloom-trading@3",
+  id: "bloom-trading@4",
   root: "Stack",
   componentGroups: [...openuiComponentGroups, tradingComponentGroup],
   components: [
@@ -666,5 +723,7 @@ export const bloomLibrary = createLibrary({
     ...TRADING_COMPONENTS,
   ],
 })
+
+bloomLibraryRef = bloomLibrary
 
 export const bloomLibrarySpec = bloomLibrary.toSpec()

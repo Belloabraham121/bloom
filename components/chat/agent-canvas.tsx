@@ -11,6 +11,7 @@ import { AnimatedOrb } from "./animated-orb"
 import { TypingIndicator } from "./typing-indicator"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useCanvasShell } from "./live-feed-context"
 
 interface AgentCanvasProps {
   messages: Message[]
@@ -22,6 +23,8 @@ interface AgentCanvasProps {
   onOpenUIAction?: (event: ActionEvent) => void
   /** Reset held canvas when the active conversation changes */
   conversationKey?: string | null
+  /** Persist shell OpenUI (with CanvasSlots) into canvas store */
+  onShellDocument?: (openui: string) => void
   topOffsetClassName?: string
   bottomOffsetClassName?: string
 }
@@ -35,6 +38,7 @@ export function AgentCanvas({
   username,
   onOpenUIAction,
   conversationKey = null,
+  onShellDocument,
   topOffsetClassName = "pt-16",
   bottomOffsetClassName = "pb-44",
 }: AgentCanvasProps) {
@@ -44,7 +48,9 @@ export function AgentCanvas({
     messageId: string
     content: string
   } | null>(null)
+  const lastSyncedShellRef = useRef<string | null>(null)
 
+  const canvasShell = useCanvasShell()
   const live = resolveCanvasDocument(messages, isStreaming)
 
   useEffect(() => {
@@ -55,17 +61,37 @@ export function AgentCanvas({
 
   useEffect(() => {
     setHeldCanvas(null)
+    lastSyncedShellRef.current = null
   }, [conversationKey])
 
   useEffect(() => {
     if (messages.length === 0) setHeldCanvas(null)
   }, [messages.length])
 
-  const document = live
-    ? live
-    : heldCanvas
-      ? { ...heldCanvas, isStreaming: false }
-      : null
+  // Persist chat-emitted OpenUI as canvas shell (enables CanvasSlot patches)
+  useEffect(() => {
+    if (isStreaming || !live?.content || !onShellDocument) return
+    if (!looksLikeOpenUI(live.content, false)) return
+    if (lastSyncedShellRef.current === live.content) return
+    lastSyncedShellRef.current = live.content
+    onShellDocument(live.content)
+  }, [isStreaming, live?.content, live?.messageId, onShellDocument])
+
+  // Prefer stored shell when not streaming a new OpenUI reply (slot patches keep shell string stable)
+  const document =
+    isStreaming && live
+      ? live
+      : canvasShell
+        ? {
+            messageId: `canvas-shell`,
+            content: canvasShell,
+            isStreaming: false,
+          }
+        : live
+          ? live
+          : heldCanvas
+            ? { ...heldCanvas, isStreaming: false }
+            : null
 
   const lastMessage = messages[messages.length - 1]
   const waitingForCanvasUpdate =

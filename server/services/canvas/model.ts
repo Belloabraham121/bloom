@@ -1,5 +1,5 @@
 /**
- * Named canvas widgets + patch apply (partial re-render model).
+ * Named canvas widgets + OpenUI slots + patch apply (partial re-render model).
  */
 
 export type WidgetKind =
@@ -28,6 +28,7 @@ export type CanvasModel = {
   conversationId: string | null
   layout: CanvasLayoutItem[]
   widgets: Record<string, WidgetState>
+  /** Shell OpenUI Lang (root = Stack with CanvasSlot placeholders). */
   openuiDocument?: string | null
   revision: number
 }
@@ -69,6 +70,57 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown) {
   cur[parts[parts.length - 1]!] = value
 }
 
+/** Normalize patch data into widget props (openui slots use props.openui). */
+export function coerceWidgetProps(
+  kind: WidgetKind | undefined,
+  data: unknown
+): Record<string, unknown> {
+  if (data == null) return {}
+  if (typeof data === "string") {
+    return kind === "openui" || !kind ? { openui: data } : { value: data }
+  }
+  if (typeof data === "object" && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>
+    if (
+      (kind === "openui" || obj.openui != null) &&
+      typeof obj.openui !== "string" &&
+      typeof obj.fragment === "string"
+    ) {
+      return { ...obj, openui: obj.fragment }
+    }
+    return obj
+  }
+  return { value: data }
+}
+
+/** OpenUI Lang fragment for a named slot, if present. */
+export function getSlotOpenui(
+  model: CanvasModel | null | undefined,
+  slotId: string
+): { openui: string; updatedAt: string } | null {
+  const w = model?.widgets?.[slotId]
+  if (!w) return null
+  const openui =
+    typeof w.props.openui === "string"
+      ? w.props.openui
+      : typeof w.props.fragment === "string"
+        ? w.props.fragment
+        : null
+  if (!openui?.trim()) return null
+  return { openui, updatedAt: w.updatedAt }
+}
+
+/**
+ * Ensure a slot fragment is a valid OpenUI program for Renderer.
+ * Accepts either a full `root = ...` program or a single expression / assignments.
+ */
+export function normalizeSlotOpenui(fragment: string): string {
+  const t = fragment.trim()
+  if (!t) return "root = Stack([])"
+  if (/^\s*root\s*=/.test(t)) return t
+  return `root = Stack([__bloom_slot])\n__bloom_slot = ${t}`
+}
+
 export function applyCanvasPatch(
   model: CanvasModel,
   patch: CanvasPatchOp
@@ -98,7 +150,7 @@ export function applyCanvasPatch(
         ("custom" as WidgetKind)
       next.widgets[patch.widgetId] = {
         kind,
-        props: (patch.data as Record<string, unknown>) || {},
+        props: coerceWidgetProps(kind, patch.data),
         updatedAt: now,
       }
       if (!next.layout.some((l) => l.id === patch.widgetId)) {
@@ -120,8 +172,10 @@ export function applyCanvasPatch(
       const props = { ...existing.props }
       if (patch.path) {
         setPath(props, patch.path, patch.data)
+      } else if (typeof patch.data === "string") {
+        Object.assign(props, coerceWidgetProps(existing.kind, patch.data))
       } else if (patch.data && typeof patch.data === "object") {
-        Object.assign(props, patch.data as Record<string, unknown>)
+        Object.assign(props, coerceWidgetProps(existing.kind, patch.data))
       }
       next.widgets[patch.widgetId] = {
         ...existing,
@@ -142,7 +196,7 @@ export function applyCanvasPatch(
       if (!patch.widgetId || !patch.kind) break
       next.widgets[patch.widgetId] = {
         kind: patch.kind,
-        props: (patch.data as Record<string, unknown>) || {},
+        props: coerceWidgetProps(patch.kind, patch.data),
         updatedAt: now,
       }
       if (!next.layout.some((l) => l.id === patch.widgetId)) {

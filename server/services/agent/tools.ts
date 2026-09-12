@@ -537,7 +537,7 @@ export function createTradingToolHandlers(
 
     patch_canvas: {
       description:
-        "Patch one canvas widget (set/replace/insert/remove). Prefer this over regenerating full OpenUI for small updates.",
+        "Incremental canvas edit. Prefer over regenerating full OpenUI. (1) op=full + openuiDocument sets the shell Stack (use CanvasSlot(\"id\") placeholders). (2) op=replace|set|insert with kind=openui, widgetId=<slotId>, data={openui:\"QuoteSummary(...)\"} or data as OpenUI fragment string updates ONLY that CanvasSlot. (3) op=remove clears a slot. After a shell exists, reply with plain text / MessageText — do not re-emit root=Stack for small updates.",
       parameters: z.object({
         op: z.enum(["set", "replace", "insert", "remove", "full"]),
         widgetId: z.string().optional(),
@@ -554,6 +554,7 @@ export function createTradingToolHandlers(
             "custom",
           ])
           .optional(),
+        openuiDocument: z.string().optional(),
         data: z.unknown().optional(),
       }),
       execute: async (args) => {
@@ -562,7 +563,23 @@ export function createTradingToolHandlers(
           widgetId?: string
           path?: string
           kind?: import("@/server/services/canvas/model").WidgetKind
+          openuiDocument?: string
           data?: unknown
+        }
+        // Default OpenUI slot patches to kind=openui when updating a named slot
+        if (
+          (patch.op === "replace" ||
+            patch.op === "set" ||
+            patch.op === "insert") &&
+          patch.widgetId &&
+          !patch.kind &&
+          (typeof patch.data === "string" ||
+            (patch.data &&
+              typeof patch.data === "object" &&
+              ("openui" in (patch.data as object) ||
+                "fragment" in (patch.data as object))))
+        ) {
+          patch.kind = "openui"
         }
         const { patchCanvasForUser } = await import(
           "@/server/services/canvas/store"
@@ -572,7 +589,13 @@ export function createTradingToolHandlers(
           conversationId: ctx.conversationId,
           patch,
         })
-        return { ok: true, revision: canvas.revision, layout: canvas.layout }
+        return {
+          ok: true,
+          revision: canvas.revision,
+          layout: canvas.layout,
+          slots: Object.keys(canvas.widgets),
+          hasShell: Boolean(canvas.openuiDocument),
+        }
       },
     },
 
@@ -718,44 +741,98 @@ export function createTradingToolHandlers(
         const { kickMission } = await import(
           "@/server/services/missions/runner"
         )
+        const { patchCanvasForUser } = await import(
+          "@/server/services/canvas/store"
+        )
 
-        ensureLiveIngest({ chainId })
-        const mission = await createMission({
-          userId: ctx.userId,
-          conversationId: ctx.conversationId,
-          strategy: "watch",
-          params: {
-            chainId,
-            symbol0: q.symbol0,
-            symbol1: q.symbol1,
-          },
-          status: "draft",
-        })
-        await updateMission(mission.id, ctx.userId, {
-          status: "running",
-          lastActivityAt: new Date(),
-        })
+        let missionId: string | null = null
+        const errors: string[] = []
+
+        try {
+          ensureLiveIngest({ chainId })
+        } catch (e) {
+          errors.push(`ingest: ${e instanceof Error ? e.message : String(e)}`)
+        }
+
+        try {
+          const mission = await createMission({
+            userId: ctx.userId,
+            conversationId: ctx.conversationId,
+            strategy: "watch",
+            params: {
+              chainId,
+              symbol0: q.symbol0,
+              symbol1: q.symbol1,
+            },
+            status: "draft",
+          })
+          await updateMission(mission.id, ctx.userId, {
+            status: "running",
+            lastActivityAt: new Date(),
+          })
+          missionId = mission.id
+        } catch (e) {
+          errors.push(`mission: ${e instanceof Error ? e.message : String(e)}`)
+        }
+
         await startLiveSession({
           userId: ctx.userId,
           conversationId: ctx.conversationId ?? null,
           chainId,
           purpose: q.purpose || "market_watch",
-          missionId: mission.id,
+          missionId,
           startedAt: new Date().toISOString(),
         })
-        await kickMission(mission.id, ctx.userId)
-        await publishAgentEvent({
-          userId: ctx.userId,
-          missionId: mission.id,
-          step: "status",
-          message: q.purpose
-            ? `Live watch started — ${q.purpose}`
-            : "Live market watch started",
-        })
+
+        // Client flips liveActive from this canvas patch (always-on SSE) — avoids Redis chicken/egg
+        try {
+          await patchCanvasForUser({
+            userId: ctx.userId,
+            conversationId: ctx.conversationId,
+            patch: {
+              op: "replace",
+              widgetId: "_live",
+              kind: "custom",
+              data: {
+                active: true,
+                chainId,
+                missionId,
+                purpose: q.purpose || "market_watch",
+                symbol0: q.symbol0,
+                symbol1: q.symbol1,
+              },
+            },
+          })
+        } catch (e) {
+          errors.push(`canvas: ${e instanceof Error ? e.message : String(e)}`)
+        }
+
+        if (missionId) {
+          try {
+            await kickMission(missionId, ctx.userId)
+          } catch (e) {
+            errors.push(`kick: ${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
+
+        try {
+          await publishAgentEvent({
+            userId: ctx.userId,
+            missionId: missionId ?? undefined,
+            step: "status",
+            message: q.purpose
+              ? `Live watch started — ${q.purpose}`
+              : "Live market watch started",
+          })
+        } catch (e) {
+          errors.push(`event: ${e instanceof Error ? e.message : String(e)}`)
+        }
+
         return {
           liveActive: true,
-          missionId: mission.id,
+          missionId,
           chainId,
+          warnings: errors.length ? errors : undefined,
           openuiHint:
             "REQUIRED: respond with OpenUI Stack including LiveActivity, LiveMarketTick, LiveTradeTape (and InflightTrade if trading). Example: root = Stack([title, activity, tick, tape])",
         }
@@ -776,18 +853,43 @@ export function createTradingToolHandlers(
         const { publishAgentEvent } = await import(
           "@/server/services/market/bus"
         )
+        const { patchCanvasForUser } = await import(
+          "@/server/services/canvas/store"
+        )
         await stopLiveSession(ctx.userId)
-        const missions = await listMissionsForUser(ctx.userId, 20)
-        for (const m of missions) {
-          if (m.status === "running" && m.strategy === "watch") {
-            await updateMission(m.id, ctx.userId, { status: "stopped" })
+        try {
+          const missions = await listMissionsForUser(ctx.userId, 20)
+          for (const m of missions) {
+            if (m.status === "running" && m.strategy === "watch") {
+              await updateMission(m.id, ctx.userId, { status: "stopped" })
+            }
           }
+        } catch {
+          /* db optional for stop */
         }
-        await publishAgentEvent({
-          userId: ctx.userId,
-          step: "status",
-          message: "Live market watch stopped",
-        })
+        try {
+          await patchCanvasForUser({
+            userId: ctx.userId,
+            conversationId: ctx.conversationId,
+            patch: {
+              op: "replace",
+              widgetId: "_live",
+              kind: "custom",
+              data: { active: false },
+            },
+          })
+        } catch {
+          /* ignore */
+        }
+        try {
+          await publishAgentEvent({
+            userId: ctx.userId,
+            step: "status",
+            message: "Live market watch stopped",
+          })
+        } catch {
+          /* ignore */
+        }
         return { liveActive: false }
       },
     },

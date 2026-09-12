@@ -68,13 +68,26 @@ export async function patchCanvasForUser(params: {
   const current = await getCanvasModel(params.userId, conversationId)
   const next = applyCanvasPatch(current, params.patch)
   await saveCanvasModel(params.userId, conversationId, next)
+
+  const widgetId = params.patch.widgetId
+  const widget = widgetId ? next.widgets[widgetId] : undefined
   await publishCanvasPatch({
     userId: params.userId,
     conversationId,
     op: params.patch.op,
-    widgetId: params.patch.widgetId,
+    widgetId,
     path: params.patch.path,
-    data: params.patch.data,
+    kind: params.patch.kind || widget?.kind,
+    openuiDocument:
+      params.patch.openuiDocument !== undefined
+        ? params.patch.openuiDocument
+        : undefined,
+    revision: next.revision,
+    data:
+      params.patch.data ??
+      (widget
+        ? { openui: widget.props.openui, ...widget.props }
+        : undefined),
   })
   return next
 }
