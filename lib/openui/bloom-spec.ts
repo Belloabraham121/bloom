@@ -237,9 +237,23 @@ const InflightTrade = defineComponent({
 const CanvasSlot = defineComponent({
   name: "CanvasSlot",
   description:
-    "Named OpenUI region for incremental edits. Place in shell Stack once; update via patch_canvas kind=openui widgetId=slotId. Do not regenerate the whole Stack for small changes.",
+    "Named OpenUI region. Place once in CanvasWorld with x,y; update via patch_canvas. Use add_dashboard only when the user asks for another dashboard.",
   props: z.object({
     slotId: z.string(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+  }),
+  component: noop,
+})
+
+const CanvasWorld = defineComponent({
+  name: "CanvasWorld",
+  description:
+    "Positioned plane for absolute CanvasSlot children. Use as world inside root Stack for multi-dashboard layouts.",
+  props: z.object({
+    children: z.array(z.any()),
+    width: z.number().optional(),
+    height: z.number().optional(),
   }),
   component: noop,
 })
@@ -264,6 +278,7 @@ const TRADING_COMPONENTS = [
   LiveMarketTick,
   InflightTrade,
   CanvasSlot,
+  CanvasWorld,
   Root,
 ]
 
@@ -271,10 +286,9 @@ const tradingComponentGroup: ComponentGroup = {
   name: "Trading",
   components: TRADING_COMPONENTS.map((c) => c.name),
   notes: [
-    "- Use Trading components for Uniswap quotes, approvals, confirms, LP, and pool TVL.",
-    "- Incremental: CanvasSlot(\"id\") in shell + patch_canvas kind=openui for updates.",
-    "- Real-time: start_market_watch then LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade in Stack.",
-    "- Never assume fixed chat chrome for live UI.",
+    "- First paint: Stack([CanvasWorld([CanvasSlot(id,x,y)...])]).",
+    "- Updates: patch_canvas on widgetId; add_dashboard only when user asks for another panel.",
+    "- Never rebuild root Stack after first paint.",
     "- Token discovery → TokenList + TokenRow. Chains → ChainList + ChainRow.",
     "- Prefer Button with Action([@ToAssistant(\"...\")]) for confirm / follow-up clicks.",
   ],
@@ -285,52 +299,35 @@ const basePromptOptions = (openuiBase.promptOptions ?? {}) as PromptOptions
 export const bloomPromptOptions: PromptOptions = {
   examples: [
     ...(basePromptOptions.examples ?? []),
-    `Example — Uniswap quote + confirm:
+    `Example — quote after shell exists (REQUIRED pattern):
 
-root = Stack([caption, quote, cost, confirm])
-caption = TextContent("Quote ready", "large-heavy")
-quote = QuoteSummary("USDC", "WETH", "100", "0.04", "CLASSIC", "1.20", "Ethereum")
-cost = CostBreakdown("1.20")
-confirm = ConfirmTx("Confirm swap", "Swap 100 USDC for ~0.04 WETH on Ethereum", null, true)`,
-    `Example — incremental canvas shell:
+Call get_quote with body={{tokenIn:"USDC", tokenOut:"WETH", amount:"100", tokenInChainId:1, tokenOutChainId:1}}
+That tool paints CanvasSlot("quote") with QuoteSummary + ConfirmTx.
+Reply with short plain text only — never emit root = Stack for quotes.`,
+    `Example — first paint spatial shell:
 
-root = Stack([title, quote_slot, live_slot])
+root = Stack([world])
+world = CanvasWorld([title, live_slot, quote_slot])
 title = TextContent("Trading desk", "large-heavy")
-quote_slot = CanvasSlot("quote")
-live_slot = CanvasSlot("live")
+live_slot = CanvasSlot("live", 40, 80)
+quote_slot = CanvasSlot("quote", 520, 80)
 
-Then patch_canvas replace widgetId=quote kind=openui data={{openui:"QuoteSummary(...)"}}. Later: only patch_canvas.`,
-    `Example — live real-time (after start_market_watch):
+Then ONLY patch_canvas / get_quote / start_market_watch / add_dashboard.`,
+    `Example — another scene/dashboard:
 
-root = Stack([title, activity, tick, tape])
-title = TextContent("Live USDC/ETH", "large-heavy")
-activity = LiveActivity("Agent activity")
-tick = LiveMarketTick("Last tick")
-tape = LiveTradeTape("Trades")`,
-    `Example — tokens with logos:
+patch_canvas op=add_dashboard widgetId=analytics data={{openui:"Stack([title, tbl])\\ntitle = TextContent(\\"Pools\\", \\"large-heavy\\")\\n..."}}`,
+    `Example — live market:
 
-root = Stack([title, list])
-title = TextContent("Tokens", "large-heavy")
-list = TokenList("Ethereum", "Chain ID 1", [t1])
-t1 = TokenRow("USDC", "USD Coin", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "https://coin-images.coingecko.com/coins/images/6319/large/usdc.png")`,
-    `Example — Pool TVL table + chart:
-
-root = Stack([title, tbl, chart])
-title = TextContent("Top Base V3 pools", "large-heavy")
-tbl = Table([Col("Pair", pairs), Col("TVL (USD)", tvls)])
-pairs = ["WETH/USDC", "WETH/USDbC"]
-tvls = [12000000, 4500000]
-chart = BarChart(pairs, [s1], "grouped")
-s1 = Series("TVL", tvls)`,
+Call start_market_watch symbol0=USDC symbol1=ETH (seeds live slot). Do not rebuild shell.`,
   ],
   additionalRules: [
     ...(basePromptOptions.additionalRules ?? []),
-    "Every program must start with root = Stack([...]). Do not use Root(...).",
-    "Prefer CanvasSlot + patch_canvas for incremental updates; full Stack only for first paint or major layout changes.",
-    "Live UI must be OpenUI LiveActivity / LiveTradeTape / LiveMarketTick / InflightTrade after start_market_watch — never fixed chrome.",
-    "For Uniswap trading flows prefer Trading components (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry, etc.).",
+    "First paint only: root = Stack([CanvasWorld([...])]). After that NEVER emit root = Stack — use tools that patch the canvas.",
+    "Quotes: call get_quote — it updates the quote panel automatically.",
+    "New scenes: patch_canvas op=add_dashboard. Edits: patch_canvas op=replace widgetId=...",
+    "Live: start_market_watch then leave Live* in the live slot (auto-seeded).",
+    "For Uniswap trading flows prefer Trading components inside slot patches (QuoteSummary, ConfirmTx, TokenList, PoolTelemetry).",
     "When a tool returns logoUrl, pass it as TokenRow's fourth argument so the icon renders.",
-    "For comparisons and analytics use Table, BarChart, LineChart, PieChart, etc.",
     "Buttons: use Button / Buttons with Action([@ToAssistant(\"message\")]) or @OpenUrl(\"https://...\").",
     "Never invent token addresses, chain IDs, or logo URLs — call tools first.",
   ],

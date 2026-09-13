@@ -53,13 +53,15 @@ export type CanvasPatch = {
   type: "canvas_patch"
   userId: string
   conversationId?: string | null
-  op: "set" | "replace" | "insert" | "remove" | "full"
+  op: "set" | "replace" | "insert" | "remove" | "full" | "add_dashboard" | "move"
   widgetId?: string
   path?: string
   kind?: string
   openuiDocument?: string | null
   revision?: number
   data?: unknown
+  x?: number
+  y?: number
   at: string
 }
 
@@ -199,9 +201,21 @@ export async function subscribeChannels(
 ): Promise<() => Promise<void>> {
   const localHandlers: Array<{ channel: string; fn: (msg: BusMessage) => void }> =
     []
+  // Deduplicate local+Redis double delivery in the same process
+  const seen = new Set<string>()
+  const deliver = (channel: string, message: BusMessage) => {
+    const key = `${channel}:${message.type}:${message.at}`
+    if (seen.has(key)) return
+    seen.add(key)
+    if (seen.size > 300) {
+      const first = seen.values().next().value
+      if (first) seen.delete(first)
+    }
+    onMessage(channel, message)
+  }
 
   for (const channel of channels) {
-    const fn = (msg: BusMessage) => onMessage(channel, msg)
+    const fn = (msg: BusMessage) => deliver(channel, msg)
     localBus.on(channel, fn)
     localHandlers.push({ channel, fn })
   }
@@ -215,7 +229,7 @@ export async function subscribeChannels(
       const handler = (channel: string, raw: string) => {
         if (!channels.includes(channel)) return
         try {
-          onMessage(channel, JSON.parse(raw) as BusMessage)
+          deliver(channel, JSON.parse(raw) as BusMessage)
         } catch {
           /* ignore */
         }

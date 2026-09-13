@@ -3,7 +3,10 @@
  */
 
 import { publishMarketEvent } from "@/server/services/market/bus"
-import { getTopPools } from "@/server/services/subgraph/client"
+import {
+  getTopPools,
+  isGraphConfigured,
+} from "@/server/services/subgraph/client"
 import { pollCoinGeckoPriceOnce } from "@/server/services/market/price-fallback"
 
 export type StreamHandle = {
@@ -71,6 +74,8 @@ export async function pollSubgraphMarketOnce(
   chainId = 1,
   opts?: { symbol0?: string; symbol1?: string }
 ): Promise<number> {
+  if (!isGraphConfigured()) return 0
+
   const result = await getTopPools({ version: "v3", chainId, first: 15 })
   const raw =
     (result.data as { pools?: Array<Record<string, unknown>> })?.pools ??
@@ -137,16 +142,24 @@ export async function pollMarketOnce(opts: PollMarketOpts = {}): Promise<{
 
   let graphCount = 0
   try {
-    graphCount = await Promise.race([
-      pollSubgraphMarketOnce(chainId, {
-        symbol0: opts.symbol0,
-        symbol1: opts.symbol1,
-      }),
-      new Promise<number>((resolve) => setTimeout(() => resolve(0), 4_000)),
-    ])
+    if (!isGraphConfigured()) {
+      // Spot sources (CoinGecko / DefiLlama / Binance) are enough for the worker
+    } else {
+      graphCount = await Promise.race([
+        pollSubgraphMarketOnce(chainId, {
+          symbol0: opts.symbol0,
+          symbol1: opts.symbol1,
+        }),
+        new Promise<number>((resolve) => setTimeout(() => resolve(0), 4_000)),
+      ])
+    }
   } catch (error) {
-    if (!isNetworkDnsError(error)) {
-      console.warn("[market-poller] graph", error)
+    const msg = error instanceof Error ? error.message : String(error)
+    if (
+      !isNetworkDnsError(error) &&
+      !msg.includes("THE_GRAPH_API_KEY is not configured")
+    ) {
+      console.warn("[market-poller] graph", msg)
     }
   }
 

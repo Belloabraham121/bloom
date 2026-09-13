@@ -12,8 +12,8 @@ import { ChevronDown, ExternalLink, GripVertical, Pause, Play, Square } from "lu
 import { AnimatedOrb } from "./animated-orb"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import type { LiveAgentStep } from "./agent-activity-dock"
 import type { TradeTapeRow } from "./live-trade-tape"
+import { useLiveFeed } from "./live-feed-context"
 
 const STORAGE_KEY = "bloom-tx-hub-y"
 const TOP_CLAMP = 64
@@ -135,23 +135,20 @@ function readStoredY(): number | null {
 
 interface TransactionHubProps {
   getAccessToken: () => Promise<string | null>
-  liveActive: boolean
-  working: boolean
-  tapeRows: TradeTapeRow[]
-  agentEvents?: LiveAgentStep[]
-  missionAction?: (action: string, missionId?: string | null) => Promise<void>
   className?: string
 }
 
 export function TransactionHub({
   getAccessToken,
-  liveActive,
-  working,
-  tapeRows,
-  agentEvents = [],
-  missionAction,
   className,
 }: TransactionHubProps) {
+  const {
+    liveActive,
+    working,
+    tapeRows,
+    events: agentEvents,
+    missionAction,
+  } = useLiveFeed()
   const [expanded, setExpanded] = useState(false)
   const [persisted, setPersisted] = useState<PersistedTx[]>([])
   const [y, setY] = useState<number | null>(null)
@@ -349,7 +346,7 @@ export function TransactionHub({
       {/* Expanded sheet */}
       {expanded && (
         <div className="overflow-hidden rounded-b-2xl border border-t-0 border-border/80 bg-card/95 shadow-lg backdrop-blur-md">
-          {liveActive && missionAction && (
+          {liveActive && (
             <div className="flex items-center gap-1 border-b border-border/50 px-2 py-1.5">
               <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
                 {latestEvent?.message || "Live session"}

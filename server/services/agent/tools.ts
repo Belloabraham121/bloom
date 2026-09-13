@@ -66,23 +66,155 @@ export function createTradingToolHandlers(
     },
 
     get_quote: {
-      description: "Get a Uniswap Trading API quote (routing decides next step)",
+      description:
+        "Get a Uniswap quote AND paint it on CanvasSlot(\"quote\") with QuoteSummary + ConfirmTx. Pass body: {tokenIn, tokenOut, amount, tokenInChainId?, tokenOutChainId?}. Symbols OK (USDC/WETH/ETH). Do NOT emit a new root Stack — this tool updates the board.",
       parameters: z.object({
         body: z.record(z.string(), z.unknown()),
       }),
       execute: async (args) => {
-        const { body } = asObject(args) as { body: Record<string, unknown> }
-        const quote = (await tradeClient.quote(body, origin(ctx))) as Record<
-          string,
-          unknown
-        >
-        const routing = String(quote.routing ?? "")
-        return { quote, suggestedPath: resolveExecutionPath(routing) }
+        const { body: raw } = asObject(args) as {
+          body: Record<string, unknown>
+        }
+        const { normalizeQuoteBody } = await import(
+          "@/server/services/uniswap/normalize-quote"
+        )
+        const { patchCanvasForUser } = await import(
+          "@/server/services/canvas/store"
+        )
+        const {
+          buildPreparedJsonFromSwapResult,
+          buildQuoteSlotOpenui,
+          estimateAmountOutDisplay,
+          humanAmountFromBase,
+        } = await import("@/server/services/canvas/quote-openui")
+
+        let swapper: string | null = null
+        try {
+          const rows = await db
+            .select()
+            .from(wallets)
+            .where(eq(wallets.userId, ctx.userId))
+            .limit(1)
+          const addr = rows[0]?.address
+          if (typeof addr === "string" && /^0x[a-fA-F0-9]{40}$/.test(addr)) {
+            swapper = addr
+          }
+        } catch {
+          /* optional */
+        }
+        const { body, warnings } = await normalizeQuoteBody(raw, {
+          decisionOrigin: origin(ctx),
+          swapper,
+        })
+        try {
+          const quote = (await tradeClient.quote(body, origin(ctx))) as Record<
+            string,
+            unknown
+          >
+          const routing = String(quote.routing ?? "")
+          const suggestedPath = resolveExecutionPath(routing)
+
+          let preparedJson: string | null = null
+          let prepareError: string | undefined
+          if (suggestedPath === "swap" || suggestedPath === "swap_5792" || suggestedPath === "swap_7702") {
+            try {
+              const prepared = await tradeClient.prepareExecution({
+                quote,
+                preferBatch: null,
+                decisionOrigin: origin(ctx),
+              })
+              await insertTransaction({
+                userId: ctx.userId,
+                conversationId: ctx.conversationId,
+                category: "swap",
+                status: "pending",
+                responsePayload: prepared.result,
+                requestPayload: quote,
+              })
+              preparedJson = buildPreparedJsonFromSwapResult(
+                prepared.result,
+                Number(body.tokenInChainId) || 1
+              )
+            } catch (e) {
+              prepareError =
+                e instanceof Error ? e.message : "prepareExecution failed"
+            }
+          }
+
+          const symbolIn = String(
+            raw.tokenIn || raw.symbolIn || "TOKEN_IN"
+          ).toUpperCase()
+          const symbolOut = String(
+            raw.tokenOut || raw.symbolOut || "TOKEN_OUT"
+          ).toUpperCase()
+          const decimalsIn =
+            symbolIn === "USDC" || symbolIn === "USDT" ? 6 : 18
+          const amountInHuman = humanAmountFromBase(
+            String(body.amount),
+            decimalsIn
+          )
+          const amountOutDisplay = estimateAmountOutDisplay(
+            quote,
+            symbolOut === "USDC" || symbolOut === "USDT" ? 6 : 18
+          )
+          const summary = `Swap ${amountInHuman} ${symbolIn} for ~${amountOutDisplay} ${symbolOut}`
+          const openui = buildQuoteSlotOpenui({
+            symbolIn: /^0X/.test(symbolIn) ? "Token" : symbolIn,
+            symbolOut: /^0X/.test(symbolOut) ? "Token" : symbolOut,
+            amountInHuman,
+            amountOutDisplay,
+            routing: routing || "CLASSIC",
+            chainName: Number(body.tokenInChainId) === 8453 ? "Base" : "Ethereum",
+            preparedJson,
+            summary,
+          })
+
+          await patchCanvasForUser({
+            userId: ctx.userId,
+            conversationId: ctx.conversationId,
+            patch: {
+              op: "replace",
+              widgetId: "quote",
+              kind: "openui",
+              data: { openui },
+            },
+          })
+
+          return {
+            ok: true,
+            quote,
+            suggestedPath,
+            request: body,
+            preparedJson,
+            canvasPatched: "quote",
+            needsConfirm: Boolean(preparedJson),
+            prepareError,
+            warnings: warnings.length ? warnings : undefined,
+            openuiHint:
+              "Quote panel updated on canvas. Reply with short plain text only — do not emit root=Stack.",
+          }
+        } catch (err) {
+          const { UniswapApiError } = await import(
+            "@/server/services/uniswap/http"
+          )
+          if (err instanceof UniswapApiError) {
+            return {
+              error: err.message,
+              status: err.status,
+              requestId: err.requestId,
+              detail: err.body,
+              request: body,
+              warnings,
+            }
+          }
+          throw err
+        }
       },
     },
 
     create_swap_calldata: {
-      description: "Create classic/bridge/wrap swap calldata from a quote via POST /swap",
+      description:
+        "Create classic/bridge/wrap swap calldata from a quote via POST /swap. Returns preparedJson for ConfirmTx. Prefer get_quote which already prepares + patches the quote panel.",
       parameters: z.object({
         quote: z.record(z.string(), z.unknown()),
       }),
@@ -101,7 +233,24 @@ export function createTradingToolHandlers(
           responsePayload: prepared.result,
           requestPayload: quote,
         })
-        return prepared
+        const { buildPreparedJsonFromSwapResult } = await import(
+          "@/server/services/canvas/quote-openui"
+        )
+        const chainId =
+          typeof (quote as { chainId?: number }).chainId === "number"
+            ? (quote as { chainId: number }).chainId
+            : 1
+        const preparedJson = buildPreparedJsonFromSwapResult(
+          prepared.result,
+          chainId
+        )
+        return {
+          ...prepared,
+          preparedJson,
+          openuiHint: preparedJson
+            ? `Patch quote slot ConfirmTx preparedJson=${preparedJson.slice(0, 80)}…`
+            : "No broadcastable calldata in prepare result",
+        }
       },
     },
 
@@ -641,9 +790,17 @@ export function createTradingToolHandlers(
 
     patch_canvas: {
       description:
-        "Incremental canvas edit. Prefer over regenerating full OpenUI. (1) op=full + openuiDocument sets the shell Stack (use CanvasSlot(\"id\") placeholders). (2) op=replace|set|insert with kind=openui, widgetId=<slotId>, data={openui:\"QuoteSummary(...)\"} or data as OpenUI fragment string updates ONLY that CanvasSlot. (3) op=remove clears a slot. After a shell exists, reply with plain text / MessageText — do not re-emit root=Stack for small updates.",
+        "Edit the living canvas. (1) First paint only: op=full + openuiDocument with Stack([CanvasWorld([...])]) and CanvasSlot(id, x, y). (2) Edit a panel: op=replace|set widgetId=<slotId> kind=openui data={openui:\"...\"}. (3) New dashboard when user asks: op=add_dashboard widgetId=<newId> data={openui:\"...\"} (auto x/y grid). (4) op=remove clears a slot. After a shell exists: NEVER re-emit root=Stack in chat — only patch_canvas + short text.",
       parameters: z.object({
-        op: z.enum(["set", "replace", "insert", "remove", "full"]),
+        op: z.enum([
+          "set",
+          "replace",
+          "insert",
+          "remove",
+          "full",
+          "add_dashboard",
+          "move",
+        ]),
         widgetId: z.string().optional(),
         path: z.string().optional(),
         kind: z
@@ -660,28 +817,41 @@ export function createTradingToolHandlers(
           .optional(),
         openuiDocument: z.string().optional(),
         data: z.unknown().optional(),
+        x: z.number().optional(),
+        y: z.number().optional(),
       }),
       execute: async (args) => {
         const patch = asObject(args) as {
-          op: "set" | "replace" | "insert" | "remove" | "full"
+          op:
+            | "set"
+            | "replace"
+            | "insert"
+            | "remove"
+            | "full"
+            | "add_dashboard"
+            | "move"
           widgetId?: string
           path?: string
           kind?: import("@/server/services/canvas/model").WidgetKind
           openuiDocument?: string
           data?: unknown
+          x?: number
+          y?: number
         }
         // Default OpenUI slot patches to kind=openui when updating a named slot
         if (
           (patch.op === "replace" ||
             patch.op === "set" ||
-            patch.op === "insert") &&
+            patch.op === "insert" ||
+            patch.op === "add_dashboard") &&
           patch.widgetId &&
           !patch.kind &&
           (typeof patch.data === "string" ||
             (patch.data &&
               typeof patch.data === "object" &&
               ("openui" in (patch.data as object) ||
-                "fragment" in (patch.data as object))))
+                "fragment" in (patch.data as object))) ||
+            patch.op === "add_dashboard")
         ) {
           patch.kind = "openui"
         }
@@ -697,8 +867,9 @@ export function createTradingToolHandlers(
           ok: true,
           revision: canvas.revision,
           layout: canvas.layout,
-          slots: Object.keys(canvas.widgets),
+          slots: Object.keys(canvas.widgets).filter((id) => id !== "_live"),
           hasShell: Boolean(canvas.openuiDocument),
+          openuiDocument: canvas.openuiDocument ?? null,
         }
       },
     },
@@ -815,7 +986,7 @@ export function createTradingToolHandlers(
 
     start_market_watch: {
       description:
-        "ONLY when the user asks for real-time / live market data. Starts live SSE session. After this tool, you MUST emit OpenUI with LiveActivity / LiveMarketTick / LiveTradeTape (not fixed chrome). Do not call on every chat.",
+        "ONLY when the user asks for real-time / live market data. Starts live SSE and seeds CanvasSlot(\"live\") with Live* panels. Do not emit a new root Stack afterward — reply with short text.",
       parameters: z.object({
         chainId: z.number().optional(),
         purpose: z.string().optional(),
@@ -830,6 +1001,15 @@ export function createTradingToolHandlers(
           symbol1?: string
         }
         const chainId = q.chainId ?? 1
+        const sanitize = (raw: string | undefined, fallback: string) => {
+          const s = (raw || fallback).trim().toUpperCase()
+          // Typos like "8" or single digits are not tickers
+          if (!s || /^\d+$/.test(s) || s.length < 2) return fallback
+          if (s === "ETHER" || s === "ETHEREUM") return "ETH"
+          return s
+        }
+        const symbol0 = sanitize(q.symbol0, "USDC")
+        const symbol1 = sanitize(q.symbol1, "ETH")
         const { ensureLiveIngest } = await import(
           "@/server/services/market/ingest"
         )
@@ -855,8 +1035,8 @@ export function createTradingToolHandlers(
         try {
           ensureLiveIngest({
             chainId,
-            symbol0: q.symbol0 || "USDC",
-            symbol1: q.symbol1 || "ETH",
+            symbol0,
+            symbol1,
             userId: ctx.userId,
           })
         } catch (e) {
@@ -870,8 +1050,8 @@ export function createTradingToolHandlers(
             strategy: "watch",
             params: {
               chainId,
-              symbol0: q.symbol0,
-              symbol1: q.symbol1,
+              symbol0,
+              symbol1,
             },
             status: "draft",
           })
@@ -890,8 +1070,8 @@ export function createTradingToolHandlers(
           chainId,
           purpose: q.purpose || "market_watch",
           missionId,
-          symbol0: q.symbol0 || "USDC",
-          symbol1: q.symbol1 || "ETH",
+          symbol0,
+          symbol1,
           paused: false,
           startedAt: new Date().toISOString(),
         })
@@ -911,11 +1091,34 @@ export function createTradingToolHandlers(
                 chainId,
                 missionId,
                 purpose: q.purpose || "market_watch",
-                symbol0: q.symbol0 || "USDC",
-                symbol1: q.symbol1 || "ETH",
+                symbol0,
+                symbol1,
               },
             },
           })
+          // Fill CanvasSlot("live") so the desk is not idle if the model only emits a shell
+          const { DEFAULT_LIVE_SLOT_OPENUI, isOpenuiSlotEmpty } = await import(
+            "@/server/services/canvas/model"
+          )
+          const { getCanvasModel } = await import(
+            "@/server/services/canvas/store"
+          )
+          const canvasNow = await getCanvasModel(
+            ctx.userId,
+            ctx.conversationId ?? null
+          )
+          if (isOpenuiSlotEmpty(canvasNow, "live")) {
+            await patchCanvasForUser({
+              userId: ctx.userId,
+              conversationId: ctx.conversationId,
+              patch: {
+                op: "replace",
+                widgetId: "live",
+                kind: "openui",
+                data: { openui: DEFAULT_LIVE_SLOT_OPENUI },
+              },
+            })
+          }
         } catch (e) {
           errors.push(`canvas: ${e instanceof Error ? e.message : String(e)}`)
         }
@@ -945,9 +1148,11 @@ export function createTradingToolHandlers(
           liveActive: true,
           missionId,
           chainId,
+          symbol0,
+          symbol1,
           warnings: errors.length ? errors : undefined,
-              openuiHint:
-            "REQUIRED: OpenUI Stack with LiveActivity, LiveMarketTick (includes sparkline), LiveTradeTape. Pass symbol0=USDC symbol1=ETH on start_market_watch.",
+          openuiHint:
+            "Live slot auto-seeded with LiveActivity / LiveMarketTick / LiveTradeTape / LiveMarketSwitcher. Prefer shell Stack with CanvasSlot(live)+CanvasSlot(quote); do not leave live waiting. Pass symbol0=USDC symbol1=ETH.",
         }
       },
     },

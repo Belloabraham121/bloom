@@ -56,27 +56,13 @@ export async function runStrategyOnEvent(
 }
 
 async function runWatch(
-  ctx: StrategyContext,
-  event: MarketEvent
+  _ctx: StrategyContext,
+  _event: MarketEvent
 ): Promise<StrategyResult> {
-  await publishAgentEvent({
-    userId: ctx.userId,
-    missionId: ctx.missionId,
-    step: "signal",
-    message: `Market tick ${event.symbol0 || ""}/${event.symbol1 || ""} ${event.price || ""}`,
-    payload: event as unknown as Record<string, unknown>,
-  })
-  await patchCanvasForUser({
-    userId: ctx.userId,
-    conversationId: ctx.conversationId,
-    patch: {
-      op: "set",
-      widgetId: "pool_table",
-      path: "lastTick",
-      data: event,
-    },
-  })
-  return { acted: true, message: "watched" }
+  // Ticks already stream via market SSE → LiveMarketTick/Chart.
+  // Do NOT patch canvas or publish agent signals here — that re-rendered the
+  // whole OpenUI shell and flooded the activity dock on every poll.
+  return { acted: false, message: "watched" }
 }
 
 async function getSwapper(userId: string) {
