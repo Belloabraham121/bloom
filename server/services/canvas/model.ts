@@ -130,6 +130,7 @@ export function injectCanvasSlotIntoShell(
   x: number,
   y: number
 ): string {
+  slotId = sanitizeSlotId(slotId)
   const varName = slotVarName(slotId)
   const assignment = `${varName} = CanvasSlot("${slotId}", ${x}, ${y})`
   const trimmed = doc?.trim() ?? ""
@@ -196,6 +197,11 @@ ${assignment}`
 
 function escapeRegExp(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/** Reject slot/widget IDs that would break regex or OpenUI syntax. */
+function sanitizeSlotId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_\-]/g, "").slice(0, 64) || "panel"
 }
 
 function openuiFromPatchData(data: unknown): string {
@@ -288,6 +294,7 @@ export function moveCanvasSlotInShell(
   x: number,
   y: number
 ): string {
+  slotId = sanitizeSlotId(slotId)
   const trimmed = doc?.trim() ?? ""
   if (!trimmed) {
     return injectCanvasSlotIntoShell(null, slotId, x, y)
@@ -371,6 +378,7 @@ export function applyCanvasPatch(
   model: CanvasModel,
   patch: CanvasPatchOp
 ): CanvasModel {
+  if (patch.widgetId) patch = { ...patch, widgetId: sanitizeSlotId(patch.widgetId) }
   const next: CanvasModel = {
     ...model,
     layout: [...model.layout],
@@ -381,10 +389,17 @@ export function applyCanvasPatch(
 
   switch (patch.op) {
     case "full": {
-      if (patch.layout) next.layout = patch.layout
-      if (patch.widgets) next.widgets = patch.widgets
       if (patch.openuiDocument !== undefined) {
         next.openuiDocument = patch.openuiDocument
+      }
+      if (patch.layout) next.layout = patch.layout
+      if (patch.widgets) {
+        // Preserve _live metadata widget when doing a full replace
+        const liveWidget = next.widgets._live
+        next.widgets = patch.widgets
+        if (liveWidget && !patch.widgets._live) {
+          next.widgets._live = liveWidget
+        }
       }
       break
     }
@@ -478,6 +493,26 @@ export function applyCanvasPatch(
       if (!patch.widgetId) break
       delete next.widgets[patch.widgetId]
       next.layout = next.layout.filter((l) => l.id !== patch.widgetId)
+      // Strip slot from shell document
+      if (next.openuiDocument && patch.widgetId) {
+        // Find variable name for this slot
+        const varMatch = next.openuiDocument.match(
+          new RegExp(`(\\w+)\\s*=\\s*CanvasSlot\\("${escapeRegExp(patch.widgetId)}"`)
+        )
+        if (varMatch) {
+          const varName = varMatch[1]!
+          // Remove the assignment line
+          next.openuiDocument = next.openuiDocument.replace(
+            new RegExp(`^\\s*${escapeRegExp(varName)}\\s*=\\s*CanvasSlot\\("${escapeRegExp(patch.widgetId)}"[^\\n]*\\n?`, "m"),
+            ""
+          )
+          // Remove variable reference from arrays (e.g. CanvasWorld([..., varName, ...]))
+          next.openuiDocument = next.openuiDocument
+            .replace(new RegExp(`,\\s*${escapeRegExp(varName)}\\b`, "g"), "")
+            .replace(new RegExp(`${escapeRegExp(varName)}\\s*,\\s*`, "g"), "")
+            .replace(new RegExp(`\\[\\s*${escapeRegExp(varName)}\\s*\\]`, "g"), "[]")
+        }
+      }
       break
     }
     case "add_dashboard": {

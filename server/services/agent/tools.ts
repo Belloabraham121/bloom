@@ -102,10 +102,11 @@ export function createTradingToolHandlers(
         } catch {
           /* optional */
         }
-        const { body, warnings } = await normalizeQuoteBody(raw, {
+        const resolved = await normalizeQuoteBody(raw, {
           decisionOrigin: origin(ctx),
           swapper,
         })
+        const { body, warnings } = resolved
         try {
           const quote = (await tradeClient.quote(body, origin(ctx))) as Record<
             string,
@@ -148,14 +149,16 @@ export function createTradingToolHandlers(
             raw.tokenOut || raw.symbolOut || "TOKEN_OUT"
           ).toUpperCase()
           const decimalsIn =
-            symbolIn === "USDC" || symbolIn === "USDT" ? 6 : 18
+            resolved.tokenIn?.decimals ?? (symbolIn === "USDC" || symbolIn === "USDT" ? 6 : 18)
+          const decimalsOut =
+            resolved.tokenOut?.decimals ?? (symbolOut === "USDC" || symbolOut === "USDT" ? 6 : 18)
           const amountInHuman = humanAmountFromBase(
             String(body.amount),
             decimalsIn
           )
           const amountOutDisplay = estimateAmountOutDisplay(
             quote,
-            symbolOut === "USDC" || symbolOut === "USDT" ? 6 : 18
+            decimalsOut
           )
           const summary = `Swap ${amountInHuman} ${symbolIn} for ~${amountOutDisplay} ${symbolOut}`
           const openui = buildQuoteSlotOpenui({

@@ -204,7 +204,7 @@ export async function subscribeChannels(
   // Deduplicate local+Redis double delivery in the same process
   const seen = new Set<string>()
   const deliver = (channel: string, message: BusMessage) => {
-    const key = `${channel}:${message.type}:${message.at}`
+    const key = `${channel}:${message.type}:${message.at}:${(message as Record<string,unknown>).revision ?? ""}:${(message as Record<string,unknown>).widgetId ?? ""}`
     if (seen.has(key)) return
     seen.add(key)
     if (seen.size > 300) {

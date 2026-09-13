@@ -69,11 +69,14 @@ export function buildQuoteSlotOpenui(opts: {
   const preparedArg = opts.preparedJson
     ? `"${escapeOpenuiString(opts.preparedJson)}"`
     : "null"
+  const confirm = opts.preparedJson
+    ? `confirm = ConfirmTx("Confirm swap", "${escapeOpenuiString(opts.summary)}", null, ${preparedArg}, true)`
+    : `confirm = MessageText("This quote uses a gasless route (UniswapX). Gasless order signing is not yet supported in Bloom.")`
   return `Stack([caption, quote, cost, confirm])
 caption = TextContent("Quote ready", "large-heavy")
 quote = QuoteSummary("${escapeOpenuiString(opts.symbolIn)}", "${escapeOpenuiString(opts.symbolOut)}", "${escapeOpenuiString(opts.amountInHuman)}", "${escapeOpenuiString(opts.amountOutDisplay)}", "${escapeOpenuiString(opts.routing || "CLASSIC")}", "${escapeOpenuiString(gas)}", "${escapeOpenuiString(chain)}")
 cost = CostBreakdown("${escapeOpenuiString(gas)}")
-confirm = ConfirmTx("Confirm swap", "${escapeOpenuiString(opts.summary)}", null, ${preparedArg}, true)`
+${confirm}`
 }
 
 export function estimateAmountOutDisplay(

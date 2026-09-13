@@ -105,6 +105,7 @@ const ConfirmTx = defineComponent({
     title: z.string(),
     summary: z.string(),
     txTo: z.string().optional(),
+    preparedJson: z.string().optional(),
     requiresConfirm: z.boolean().optional(),
   }),
   component: noop,
@@ -246,6 +247,38 @@ const CanvasSlot = defineComponent({
   component: noop,
 })
 
+const LiveMarketSwitcher = defineComponent({
+  name: "LiveMarketSwitcher",
+  description:
+    "Buttons to switch the live watched pair (USDC/ETH, USDC/WBTC, …). Place in live Stack after start_market_watch.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: noop,
+})
+
+const LiveMarketChart = defineComponent({
+  name: "LiveMarketChart",
+  description:
+    "Live price sparkline chart. Emit after start_market_watch with LiveMarketTick.",
+  props: z.object({
+    title: z.string().optional(),
+  }),
+  component: noop,
+})
+
+const CanvasFrame = defineComponent({
+  name: "CanvasFrame",
+  description:
+    "Wrap OpenUI children at x,y (px) on the infinite canvas. Prefer CanvasSlot with coordinates for editable regions.",
+  props: z.object({
+    x: z.number().optional(),
+    y: z.number().optional(),
+    children: z.array(z.any()),
+  }),
+  component: noop,
+})
+
 const CanvasWorld = defineComponent({
   name: "CanvasWorld",
   description:
@@ -254,6 +287,31 @@ const CanvasWorld = defineComponent({
     children: z.array(z.any()),
     width: z.number().optional(),
     height: z.number().optional(),
+  }),
+  component: noop,
+})
+
+const BalanceBoard = defineComponent({
+  name: "BalanceBoard",
+  description:
+    "Multi-chain wallet balances. Pass rowsJson from get_wallet_balances tool (JSON array of {chainId,chainName,native,usdc,error?}).",
+  props: z.object({
+    title: z.string().optional(),
+    rowsJson: z.string(),
+  }),
+  component: noop,
+})
+
+const ConfirmSend = defineComponent({
+  name: "ConfirmSend",
+  description:
+    "Confirm a prepared transfer. Include preparedJson from prepare_transfer.",
+  props: z.object({
+    to: z.string(),
+    amount: z.string(),
+    chainId: z.number(),
+    token: z.string().optional(),
+    preparedJson: z.string().optional(),
   }),
   component: noop,
 })
@@ -267,6 +325,8 @@ const TRADING_COMPONENTS = [
   QuoteSummary,
   ApprovalCard,
   ConfirmTx,
+  ConfirmSend,
+  BalanceBoard,
   CostBreakdown,
   TxStatusCard,
   GaslessOrderCard,
@@ -274,10 +334,13 @@ const TRADING_COMPONENTS = [
   LpPositionCard,
   PoolTelemetry,
   LiveActivity,
+  LiveMarketSwitcher,
   LiveTradeTape,
   LiveMarketTick,
+  LiveMarketChart,
   InflightTrade,
   CanvasSlot,
+  CanvasFrame,
   CanvasWorld,
   Root,
 ]
@@ -333,17 +396,18 @@ Call start_market_watch symbol0=USDC symbol1=ETH (seeds live slot). Do not rebui
   ],
 }
 
-const tradingSpec = createLibrary({
+const tradingLibrary = createLibrary({
   id: "bloom-trading-only@4",
   root: "MessageText",
   components: TRADING_COMPONENTS,
-}).toSpec()
+})
+const tradingSpec = tradingLibrary.toSpec()
 
 const baseSchema = openuiBase.schema as {
   $defs?: Record<string, unknown>
   [key: string]: unknown
 }
-const tradingSchema = tradingSpec.schema as {
+const tradingSchema = tradingLibrary.toJSONSchema() as {
   $defs?: Record<string, unknown>
   [key: string]: unknown
 }
