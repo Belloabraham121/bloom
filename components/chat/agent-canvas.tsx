@@ -8,11 +8,10 @@ import { bloomLibrary } from "@/lib/openui/bloom-library"
 import { looksLikeOpenUI, resolveCanvasDocument } from "@/lib/openui/detect"
 import type { Message } from "./chat-shell"
 import { AnimatedOrb } from "./animated-orb"
-import { CanvasRenderGlow } from "@/lib/openui/canvas-render-glow"
 import { TypingIndicator } from "./typing-indicator"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { useCanvasShell } from "./live-feed-context"
+import { useCanvasShell, useCanvasFeed } from "./live-feed-context"
 import { InfiniteCanvasStage } from "./infinite-canvas-stage"
 
 interface AgentCanvasProps {
@@ -40,7 +39,7 @@ export function AgentCanvas({
   username,
   onOpenUIAction,
   conversationKey = null,
-  onShellDocument,
+  onShellDocument: onShellDocumentProp,
   topOffsetClassName = "pt-16",
   bottomOffsetClassName = "pb-44",
 }: AgentCanvasProps) {
@@ -53,6 +52,8 @@ export function AgentCanvas({
   const lastSyncedShellRef = useRef<string | null>(null)
 
   const canvasShell = useCanvasShell()
+  const { syncCanvasShell } = useCanvasFeed()
+  const onShellDocument = onShellDocumentProp ?? syncCanvasShell
   const live = resolveCanvasDocument(messages, isStreaming)
 
   useEffect(() => {
@@ -70,37 +71,40 @@ export function AgentCanvas({
     if (messages.length === 0) setHeldCanvas(null)
   }, [messages.length])
 
-  // Persist chat-emitted OpenUI as canvas shell (enables CanvasSlot patches)
+  // First paint: persist shell. Later OpenUI fragments → patch quote (or named) slot.
   useEffect(() => {
     if (isStreaming || !live?.content || !onShellDocument) return
     if (!looksLikeOpenUI(live.content, false)) return
     if (lastSyncedShellRef.current === live.content) return
     lastSyncedShellRef.current = live.content
     onShellDocument(live.content)
-  }, [isStreaming, live?.content, live?.messageId, onShellDocument])
+  }, [
+    isStreaming,
+    live?.content,
+    live?.messageId,
+    onShellDocument,
+  ])
 
-  // Prefer stored shell when not streaming a new OpenUI reply (slot patches keep shell string stable)
-  const document =
-    isStreaming && live
+  // After a shell exists, always show it (slot patches update regions). Streamed OpenUI
+  // is only used for the initial paint so we do not rebuild the whole board.
+  const document = canvasShell
+    ? {
+        messageId: `canvas-shell`,
+        content: canvasShell,
+        isStreaming: false,
+      }
+    : live
       ? live
-      : canvasShell
-        ? {
-            messageId: `canvas-shell`,
-            content: canvasShell,
-            isStreaming: false,
-          }
-        : live
-          ? live
-          : heldCanvas
-            ? { ...heldCanvas, isStreaming: false }
-            : null
+      : heldCanvas
+        ? { ...heldCanvas, isStreaming: false }
+        : null
 
   const lastMessage = messages[messages.length - 1]
   const waitingForCanvasUpdate =
     isStreaming &&
     lastMessage?.role === "assistant" &&
-    !looksLikeOpenUI(lastMessage.content, true) &&
-    !!document
+    !!document &&
+    !document.isStreaming
 
   const showTypingOnEmpty =
     isStreaming &&
@@ -108,9 +112,6 @@ export function AgentCanvas({
     (messages.length === 0 ||
       lastMessage?.role === "user" ||
       (lastMessage?.role === "assistant" && lastMessage.content === ""))
-
-  const isCanvasRendering =
-    Boolean(document?.isStreaming) || waitingForCanvasUpdate || showTypingOnEmpty
 
   useEffect(() => {
     if (!isLoaded) return
@@ -184,19 +185,23 @@ export function AgentCanvas({
       )}
 
       {document && (
-        <InfiniteCanvasStage
-          conversationKey={conversationKey ?? undefined}
-          className="h-full w-full"
-        >
-          {(waitingForCanvasUpdate || document.isStreaming) && (
-            <div className="pointer-events-none mb-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+        <>
+          {(waitingForCanvasUpdate ||
+            document.isStreaming ||
+            (isStreaming && !canvasShell && Boolean(live))) && (
+            <div className="pointer-events-none absolute left-0 right-0 top-0 z-30 flex items-center justify-center gap-2 bg-background/80 py-2 text-xs text-muted-foreground backdrop-blur-sm">
               <AnimatedOrb size={20} glow />
               <span>
-                {document.isStreaming ? "Rendering canvas…" : "Updating canvas…"}
+                {document.isStreaming || (!canvasShell && isStreaming)
+                  ? "Rendering canvas…"
+                  : "Updating canvas…"}
               </span>
             </div>
           )}
-          <CanvasRenderGlow active={isCanvasRendering} className="w-full min-w-0">
+          <InfiniteCanvasStage
+            conversationKey={conversationKey ?? undefined}
+            className="h-full w-full"
+          >
             <section
               key="living-canvas"
               className="w-full min-w-0 animate-in fade-in rounded-2xl duration-200"
@@ -213,8 +218,8 @@ export function AgentCanvas({
                 </div>
               </ThemeProvider>
             </section>
-          </CanvasRenderGlow>
-        </InfiniteCanvasStage>
+          </InfiniteCanvasStage>
+        </>
       )}
 
       {error && (

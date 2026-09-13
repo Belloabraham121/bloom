@@ -3,6 +3,7 @@
 import {
   createContext,
   useContext,
+  useMemo,
   type ReactNode,
 } from "react"
 import type { LiveAgentStep } from "./agent-activity-dock"
@@ -17,7 +18,8 @@ export type LiveTickPoint = {
   usd?: number
 }
 
-export type LiveFeedState = {
+/** Market / mission live stream — updates often (ticks). */
+export type MarketFeedState = {
   liveActive: boolean
   working: boolean
   events: LiveAgentStep[]
@@ -27,11 +29,17 @@ export type LiveFeedState = {
   watchedPair: { symbol0: string; symbol1: string } | null
   missionAction: (action: string, missionId?: string | null) => Promise<void>
   switchMarket: (symbol0: string, symbol1: string) => Promise<void>
-  /** Incremental OpenUI canvas model (shell + named slots). */
-  canvasModel: ClientCanvasModel | null
 }
 
-const defaultState: LiveFeedState = {
+/** Canvas shell / slots — updates on patches only (not every tick). */
+export type CanvasFeedState = {
+  canvasModel: ClientCanvasModel | null
+  moveSlot: (slotId: string, x: number, y: number) => Promise<void>
+  syncCanvasShell: (openuiDocument: string) => Promise<void>
+  refreshLiveStatus: () => Promise<boolean>
+}
+
+const defaultMarket: MarketFeedState = {
   liveActive: false,
   working: false,
   events: [],
@@ -41,30 +49,72 @@ const defaultState: LiveFeedState = {
   watchedPair: null,
   missionAction: async () => {},
   switchMarket: async () => {},
-  canvasModel: null,
 }
 
-const LiveFeedContext = createContext<LiveFeedState>(defaultState)
+const defaultCanvas: CanvasFeedState = {
+  canvasModel: null,
+  moveSlot: async () => {},
+  syncCanvasShell: async () => {},
+  refreshLiveStatus: async () => false,
+}
+
+const MarketFeedContext = createContext<MarketFeedState>(defaultMarket)
+const CanvasFeedContext = createContext<CanvasFeedState>(defaultCanvas)
 
 export function LiveFeedProvider({
-  value,
+  market,
+  canvas,
   children,
 }: {
-  value: LiveFeedState
+  market: MarketFeedState
+  canvas: CanvasFeedState
   children: ReactNode
 }) {
+  const marketValue = useMemo(
+    () => market,
+    [
+      market.liveActive,
+      market.working,
+      market.events,
+      market.tapeRows,
+      market.lastTick,
+      market.tickHistory,
+      market.watchedPair,
+      market.missionAction,
+      market.switchMarket,
+    ]
+  )
+  const canvasValue = useMemo(
+    () => canvas,
+    [
+      canvas.canvasModel,
+      canvas.moveSlot,
+      canvas.syncCanvasShell,
+      canvas.refreshLiveStatus,
+    ]
+  )
+
   return (
-    <LiveFeedContext.Provider value={value}>{children}</LiveFeedContext.Provider>
+    <CanvasFeedContext.Provider value={canvasValue}>
+      <MarketFeedContext.Provider value={marketValue}>
+        {children}
+      </MarketFeedContext.Provider>
+    </CanvasFeedContext.Provider>
   )
 }
 
+/** Live market ticks / activity — does NOT include canvas shell. */
 export function useLiveFeed() {
-  return useContext(LiveFeedContext)
+  return useContext(MarketFeedContext)
+}
+
+export function useCanvasFeed() {
+  return useContext(CanvasFeedContext)
 }
 
 /** Named OpenUI slot content from the living canvas model. */
 export function useCanvasSlot(slotId: string) {
-  const { canvasModel } = useLiveFeed()
+  const { canvasModel } = useCanvasFeed()
   return getSlotOpenui(
     canvasModel
       ? {
@@ -80,7 +130,10 @@ export function useCanvasSlot(slotId: string) {
 }
 
 export function useCanvasShell(): string | null {
-  const { canvasModel } = useLiveFeed()
+  const { canvasModel } = useCanvasFeed()
   const doc = canvasModel?.openuiDocument
   return typeof doc === "string" && doc.trim() ? doc : null
 }
+
+/** @deprecated combined shape — prefer useLiveFeed + useCanvasFeed */
+export type LiveFeedState = MarketFeedState & CanvasFeedState

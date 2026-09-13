@@ -14,8 +14,12 @@ const GRAPH_GATEWAY = "https://gateway.thegraph.com/api"
 
 export { listSubgraphMarkets, resolveSubgraphId, type UniswapVersion }
 
+export function isGraphConfigured(): boolean {
+  return Boolean(process.env.THE_GRAPH_API_KEY?.trim())
+}
+
 function requireApiKey() {
-  const apiKey = process.env.THE_GRAPH_API_KEY
+  const apiKey = process.env.THE_GRAPH_API_KEY?.trim()
   if (!apiKey) {
     throw new Error("THE_GRAPH_API_KEY is not configured")
   }

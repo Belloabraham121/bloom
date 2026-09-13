@@ -8,8 +8,12 @@ import {
   subscribeChannels,
   type BusMessage,
 } from "@/server/services/market/bus"
-import { getLiveSession } from "@/server/services/market/live-session"
+import {
+  getLiveSession,
+  startLiveSession,
+} from "@/server/services/market/live-session"
 import { listMissionsForUser } from "@/server/services/missions/repo"
+import { getCanvasModel } from "@/server/services/canvas/store"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -17,7 +21,7 @@ export const runtime = "nodejs"
 export async function GET(request: Request) {
   try {
     const user = await requirePrivyUserFromRequest(request)
-    const session = await getLiveSession(user.id)
+    let session = await getLiveSession(user.id)
     let running: Awaited<ReturnType<typeof listMissionsForUser>> = []
     try {
       const missions = await listMissionsForUser(user.id, 10)
@@ -26,15 +30,63 @@ export async function GET(request: Request) {
       running = []
     }
 
-    // Allow SSE if session OR a running mission (works across instances via DB)
+    // Canvas _live.active survives across workers when Redis session was lost
+    const url = new URL(request.url)
+    const conversationId = url.searchParams.get("conversationId")
     if (!session && running.length === 0) {
-      return NextResponse.json(
-        { error: "No live session. Ask the agent to start real-time data first." },
-        { status: 404 }
-      )
+      try {
+        const canvas = await getCanvasModel(user.id, conversationId)
+        const live = canvas.widgets?._live?.props as
+          | {
+              active?: boolean
+              paused?: boolean
+              chainId?: number
+              missionId?: string | null
+              symbol0?: string
+              symbol1?: string
+              purpose?: string
+            }
+          | undefined
+        if (live?.active) {
+          session = await startLiveSession({
+            userId: user.id,
+            conversationId,
+            chainId: live.chainId || 1,
+            purpose: live.purpose || "market_watch",
+            missionId: live.missionId ?? null,
+            symbol0: live.symbol0 || "USDC",
+            symbol1: live.symbol1 || "ETH",
+            paused: Boolean(live.paused),
+            startedAt: new Date().toISOString(),
+          })
+        }
+      } catch {
+        /* ignore canvas heal */
+      }
     }
 
-    const url = new URL(request.url)
+    if (!session && running.length === 0) {
+      // Must not return HTTP 404 — EventSource reconnects forever on non-2xx
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: "session_gone" })}\n\n`
+            )
+          )
+          controller.close()
+        },
+      })
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        },
+      })
+    }
+
     const paramChain = Number(url.searchParams.get("chainId") || 0)
     const missionChain = Number(
       (running[0]?.params as { chainId?: number } | null)?.chainId || 0
@@ -81,7 +133,8 @@ export async function GET(request: Request) {
           userId: user.id,
         }
         void pollMarketOnce(pollOpts).catch(() => {})
-        const pollTimer = setInterval(() => {
+        // Single slow poller — burst+per-SSE pollers stacked and froze the client
+        const slowPoll = setInterval(() => {
           void pollMarketOnce(pollOpts).catch(() => {})
         }, 8_000)
 
@@ -94,7 +147,7 @@ export async function GET(request: Request) {
           if (closed) return
           closed = true
           clearInterval(heartbeat)
-          clearInterval(pollTimer)
+          clearInterval(slowPoll)
           void cleanup?.()
           try {
             controller.close()

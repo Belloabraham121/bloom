@@ -45,7 +45,7 @@ export type PreparedTx = {
   tradeIntentId?: string | null
 }
 
-function extractTxFields(payload: unknown): {
+export function extractTxFields(payload: unknown): {
   to?: string
   data?: string
   value?: string

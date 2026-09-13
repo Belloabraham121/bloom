@@ -77,7 +77,7 @@ function looksLikeOpenUI(content: string, isStreaming = false): boolean {
   // Progressive stream: treat incomplete OpenUI Lang as GenUI once root starts.
   if (isStreaming && /^\s*root\s*=/.test(trimmed)) return true
   if (
-    /\b(MessageText|TokenList|TokenRow|ChainList|ChainRow|QuoteSummary|ConfirmTx|ConfirmSend|BalanceBoard|ApprovalCard|TxStatusCard|GaslessOrderCard|ChainedPlanCard|LpPositionCard|PoolTelemetry|CostBreakdown|LiveActivity|LiveMarketSwitcher|LiveTradeTape|LiveMarketTick|LiveMarketChart|InflightTrade|CanvasSlot|CanvasFrame|TextContent|Table|BarChart|LineChart|PieChart|Button|Form|Tabs)\s*\(/.test(
+    /\b(MessageText|TokenList|TokenRow|ChainList|ChainRow|QuoteSummary|ConfirmTx|ConfirmSend|BalanceBoard|ApprovalCard|TxStatusCard|GaslessOrderCard|ChainedPlanCard|LpPositionCard|PoolTelemetry|CostBreakdown|LiveActivity|LiveMarketSwitcher|LiveTradeTape|LiveMarketTick|LiveMarketChart|InflightTrade|CanvasSlot|CanvasFrame|CanvasWorld|TextContent|Table|BarChart|LineChart|PieChart|Button|Form|Tabs)\s*\(/.test(
       trimmed
     )
   ) {

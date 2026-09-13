@@ -71,6 +71,11 @@ export async function patchCanvasForUser(params: {
 
   const widgetId = params.patch.widgetId
   const widget = widgetId ? next.widgets[widgetId] : undefined
+  const shellChanged =
+    next.openuiDocument !== current.openuiDocument ||
+    params.patch.op === "full" ||
+    params.patch.op === "add_dashboard" ||
+    params.patch.op === "move"
   await publishCanvasPatch({
     userId: params.userId,
     conversationId,
@@ -78,8 +83,9 @@ export async function patchCanvasForUser(params: {
     widgetId,
     path: params.patch.path,
     kind: params.patch.kind || widget?.kind,
-    openuiDocument:
-      params.patch.openuiDocument !== undefined
+    openuiDocument: shellChanged
+      ? (next.openuiDocument ?? null)
+      : params.patch.openuiDocument !== undefined
         ? params.patch.openuiDocument
         : undefined,
     revision: next.revision,
@@ -88,6 +94,8 @@ export async function patchCanvasForUser(params: {
       (widget
         ? { openui: widget.props.openui, ...widget.props }
         : undefined),
+    x: params.patch.x,
+    y: params.patch.y,
   })
   return next
 }

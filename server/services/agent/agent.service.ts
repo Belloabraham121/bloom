@@ -147,18 +147,51 @@ export async function runChatTurnAsResponse(
   const modelId = resolveModelId(input.model || "openai/gpt-4o")
   console.log("[chat] thesys model", modelId)
 
-  const system = generateSystemPrompt({
-    cloud: true,
-    library: bloomLibrarySpec,
-    instructions: TRADING_AGENT_INSTRUCTIONS,
-    promptOptions: bloomPromptOptions,
-  })
-
   const handlers = createTradingToolHandlers({
     userId: input.userId,
     decisionOrigin: input.decisionOrigin,
     conversationId: input.conversationId,
   })
+
+  let canvasContext = ""
+  try {
+    const { getCanvasModel } = await import("@/server/services/canvas/store")
+    const {
+      getSlotOpenui,
+      listSlotPlacementsFromShell,
+    } = await import("@/server/services/canvas/model")
+    const canvas = await getCanvasModel(
+      input.userId,
+      input.conversationId ?? null
+    )
+    const placements = listSlotPlacementsFromShell(canvas.openuiDocument)
+    const slotIds = [
+      ...new Set([
+        ...placements.map((p) => p.id),
+        ...Object.keys(canvas.widgets).filter((id) => id !== "_live"),
+      ]),
+    ]
+    const empty = slotIds.filter((id) => !getSlotOpenui(canvas, id))
+    canvasContext = `
+
+CANVAS STATE (authoritative):
+- hasShell: ${Boolean(canvas.openuiDocument?.trim())}
+- slots: ${slotIds.join(", ") || "(none — first paint a spatial shell)"}
+- emptySlots: ${empty.join(", ") || "(none)"}
+- liveFlag: ${Boolean((canvas.widgets._live?.props as { active?: boolean } | undefined)?.active)}
+RULES: If hasShell=true, NEVER emit root=Stack. Use get_quote (auto-paints quote), start_market_watch (seeds live), patch_canvas replace, or add_dashboard for a new scene. Reply with short plain text after tools.`
+  } catch {
+    canvasContext = `
+CANVAS RULES: After first paint, never emit root=Stack — use get_quote / start_market_watch / patch_canvas / add_dashboard.`
+  }
+
+  const system = generateSystemPrompt({
+    cloud: true,
+    library: bloomLibrarySpec,
+    instructions: TRADING_AGENT_INSTRUCTIONS + canvasContext,
+    promptOptions: bloomPromptOptions,
+  })
+
   const tools = buildOpenAITools(handlers)
   const messages = toOpenAIMessages(input, system)
   const skipTools = looksLikeGreetingOnly(input.messages)

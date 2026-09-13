@@ -45,6 +45,19 @@ export function useMissionLive(opts: {
   const [canvasModel, setCanvasModel] = useState<ClientCanvasModel | null>(null)
   const marketEsRef = useRef<EventSource | null>(null)
   const canvasEsRef = useRef<EventSource | null>(null)
+  const lastMarketEsErrorAtRef = useRef(0)
+  const liveSlotHealedRef = useRef<string | null>(null)
+  const getAccessTokenRef = useRef(getAccessToken)
+  const refreshLiveStatusRef = useRef<(
+    () => Promise<boolean>
+  ) | null>(null)
+  // Stable boolean so SSE effect does not reconnect on every canvas object identity change
+  const canvasLiveActive = Boolean(
+    (canvasModel?.widgets?._live?.props as { active?: boolean } | undefined)
+      ?.active
+  )
+
+  getAccessTokenRef.current = getAccessToken
 
   const applyPatchLocal = useCallback(
     (patch: CanvasPatchOp) => {
@@ -89,13 +102,51 @@ export function useMissionLive(opts: {
               })
             }
             if (props.paused) setWorking(false)
+            // Heal empty live slot once per conversation — do not rewrite custom boards
+            const liveOpenui = data.canvas.widgets?.live?.props?.openui
+            const healKey = opts.conversationId || "__default__"
+            if (
+              liveSlotHealedRef.current !== healKey &&
+              (typeof liveOpenui !== "string" || !liveOpenui.trim())
+            ) {
+              liveSlotHealedRef.current = healKey
+              const { DEFAULT_LIVE_SLOT_OPENUI } = await import(
+                "@/server/services/canvas/model"
+              )
+              applyPatchLocal({
+                op: "replace",
+                widgetId: "live",
+                kind: "openui",
+                data: { openui: DEFAULT_LIVE_SLOT_OPENUI },
+              })
+              try {
+                await fetch("/api/canvas", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    conversationId: opts.conversationId,
+                    patch: {
+                      op: "replace",
+                      widgetId: "live",
+                      kind: "openui",
+                      data: { openui: DEFAULT_LIVE_SLOT_OPENUI },
+                    },
+                  }),
+                })
+              } catch {
+                /* local patch already applied */
+              }
+            }
           }
         }
       }
     } catch {
       /* ignore */
     }
-  }, [getAccessToken, opts.conversationId])
+  }, [getAccessToken, opts.conversationId, applyPatchLocal])
 
   const refreshLiveStatus = useCallback(async () => {
     const token = await getAccessToken()
@@ -104,9 +155,16 @@ export function useMissionLive(opts: {
       return false
     }
     try {
-      const res = await fetch("/api/missions/live-status", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const qs = new URLSearchParams()
+      if (opts.conversationId) {
+        qs.set("conversationId", opts.conversationId)
+      }
+      const res = await fetch(
+        `/api/missions/live-status${qs.toString() ? `?${qs}` : ""}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      )
       if (res.status === 503 || res.status === 401) {
         // Privy/network flake — keep current live UI state
         return false
@@ -135,7 +193,9 @@ export function useMissionLive(opts: {
       setLiveActive(false)
       return false
     }
-  }, [getAccessToken])
+  }, [getAccessToken, opts.conversationId])
+
+  refreshLiveStatusRef.current = refreshLiveStatus
 
   // Load canvas whenever conversation changes / after chat turns
   useEffect(() => {
@@ -151,7 +211,7 @@ export function useMissionLive(opts: {
     })()
     const id = setInterval(() => {
       void refreshLiveStatus()
-    }, 4_000)
+    }, 12_000)
     return () => {
       cancelled = true
       clearInterval(id)
@@ -163,7 +223,7 @@ export function useMissionLive(opts: {
     let cancelled = false
 
     void (async () => {
-      const token = await getAccessToken()
+      const token = await getAccessTokenRef.current()
       if (!token || cancelled) return
 
       const url = `/api/canvas/live?conversationId=${encodeURIComponent(opts.conversationId || "")}&access_token=${encodeURIComponent(token)}`
@@ -180,8 +240,13 @@ export function useMissionLive(opts: {
             kind?: WidgetKind
             openuiDocument?: string | null
             data?: unknown
+            x?: number
+            y?: number
           }
           if (msg.type !== "canvas_patch" || !msg.op) return
+
+          // Ignore pool_table lastTick noise if any old servers still emit it
+          if (msg.widgetId === "pool_table" && msg.path === "lastTick") return
 
           applyPatchLocal({
             op: msg.op,
@@ -190,6 +255,8 @@ export function useMissionLive(opts: {
             kind: msg.kind,
             openuiDocument: msg.openuiDocument,
             data: msg.data,
+            x: msg.x,
+            y: msg.y,
           })
 
           // start_market_watch publishes _live — flip liveActive without waiting on Redis/poll
@@ -210,7 +277,7 @@ export function useMissionLive(opts: {
                 setTickHistory([])
                 setLastTick(null)
               }
-              void refreshLiveStatus()
+              void refreshLiveStatusRef.current?.()
             }
           }
 
@@ -237,17 +304,12 @@ export function useMissionLive(opts: {
       canvasEsRef.current?.close()
       canvasEsRef.current = null
     }
-  }, [
-    opts.conversationId,
-    opts.chainId,
-    getAccessToken,
-    applyPatchLocal,
-    refreshLiveStatus,
-  ])
+  }, [opts.conversationId, opts.chainId, applyPatchLocal])
 
-  // Market / agent SSE only while a live session exists
+  // Market / agent SSE while live session OR canvas _live flag is on
   useEffect(() => {
-    if (!liveActive) {
+    const shouldConnect = liveActive || canvasLiveActive
+    if (!shouldConnect) {
       marketEsRef.current?.close()
       marketEsRef.current = null
       return
@@ -256,15 +318,26 @@ export function useMissionLive(opts: {
     let cancelled = false
 
     void (async () => {
-      const token = await getAccessToken()
+      const token = await getAccessTokenRef.current()
       if (!token || cancelled) return
 
-      const url = `/api/missions/live?chainId=${opts.chainId || 1}&access_token=${encodeURIComponent(token)}`
+      const qs = new URLSearchParams({
+        chainId: String(opts.chainId || 1),
+        access_token: token,
+      })
+      if (opts.conversationId) {
+        qs.set("conversationId", opts.conversationId)
+      }
+      const url = `/api/missions/live?${qs.toString()}`
       const es = new EventSource(url)
       marketEsRef.current = es
 
       es.onerror = () => {
-        void refreshLiveStatus()
+        const now = Date.now()
+        // Throttle status refreshes — EventSource fires onerror repeatedly while reconnecting
+        if (now - lastMarketEsErrorAtRef.current < 8_000) return
+        lastMarketEsErrorAtRef.current = now
+        void refreshLiveStatusRef.current?.()
       }
 
       es.onmessage = (ev) => {
@@ -282,6 +355,14 @@ export function useMissionLive(opts: {
             openuiDocument?: string | null
             data?: unknown
             payload?: Record<string, unknown>
+          }
+
+          if (msg.type === "session_gone") {
+            setLiveActive(false)
+            setWorking(false)
+            es.close()
+            marketEsRef.current = null
+            return
           }
 
           if (msg.type === "agent") {
@@ -330,7 +411,7 @@ export function useMissionLive(opts: {
             ) {
               setWorking(false)
               if (msg.message?.includes("stopped")) {
-                void refreshLiveStatus()
+                void refreshLiveStatusRef.current?.()
               }
             }
             if (msg.step === "submitted" && msg.payload?.txHash) {
@@ -355,8 +436,8 @@ export function useMissionLive(opts: {
 
           if (msg.type === "market") {
             const tick = msg as unknown as Record<string, unknown>
+            // Coalesce to one React update per tick
             setLastTick((prev) => {
-              // Never let an empty-price Graph event wipe a good spot price
               if (
                 (tick.price == null || tick.price === "") &&
                 prev?.price != null &&
@@ -373,28 +454,42 @@ export function useMissionLive(opts: {
             const priceNum = Number(tick.price)
             if (Number.isFinite(priceNum) && priceNum > 0) {
               const pair = `${String(tick.symbol1 || "")}/${String(tick.symbol0 || "")}`
-              setTickHistory((prev) =>
-                [
+              const usd =
+                tick.amount1 != null && Number(tick.amount1) > 0
+                  ? Number(tick.amount1)
+                  : undefined
+              const at = String(tick.at || new Date().toISOString())
+              setTickHistory((prev) => {
+                const last = prev[prev.length - 1]
+                // Drop near-duplicate samples that only thrash the sparkline
+                if (
+                  last &&
+                  Math.abs(last.price - priceNum) / Math.max(last.price, 1e-9) <
+                    0.00005 &&
+                  last.pair === pair
+                ) {
+                  return prev
+                }
+                const next = [
                   ...prev,
                   {
-                    at: String(tick.at || new Date().toISOString()),
+                    at,
                     price: priceNum,
                     pair,
-                    usd:
-                      tick.amount1 != null && Number(tick.amount1) > 0
-                        ? Number(tick.amount1)
-                        : undefined,
+                    usd,
                   },
-                ].slice(-60)
-              )
+                ]
+                if (prev.length === 0) {
+                  next.unshift({
+                    at: new Date(Date.now() - 1_000).toISOString(),
+                    price: priceNum,
+                    pair,
+                    usd,
+                  })
+                }
+                return next.slice(-60)
+              })
             }
-            applyPatchLocal({
-              op: "set",
-              widgetId: "pool_table",
-              kind: "pool_table",
-              path: "lastTick",
-              data: tick,
-            })
           }
         } catch {
           /* ignore */
@@ -407,24 +502,17 @@ export function useMissionLive(opts: {
       marketEsRef.current?.close()
       marketEsRef.current = null
     }
-  }, [
-    liveActive,
-    opts.chainId,
-    opts.conversationId,
-    getAccessToken,
-    applyPatchLocal,
-    refreshLiveStatus,
-  ])
+  }, [liveActive, canvasLiveActive, opts.chainId, opts.conversationId])
 
   // Clear live market UI when session ends — keep canvas slots/shell
   useEffect(() => {
-    if (liveActive) return
+    if (liveActive || canvasLiveActive) return
     setWorking(false)
     setAgentEvents([])
     setTapeRows([])
     setLastTick(null)
     setTickHistory([])
-  }, [liveActive])
+  }, [liveActive, canvasLiveActive])
 
   // After each chat turn, re-check live status (tool may have started watch mid-turn)
   useEffect(() => {
@@ -438,6 +526,17 @@ export function useMissionLive(opts: {
       const token = await getAccessToken()
       if (!token || !openuiDocument.trim()) return
       try {
+        // First paint: store full shell. Later GenUI: route into quote slot so it is visible.
+        const hasShell = Boolean(canvasModel?.openuiDocument?.trim())
+        const patch = hasShell
+          ? {
+              op: "replace" as const,
+              widgetId: "quote",
+              kind: "openui" as const,
+              data: { openui: openuiDocument },
+            }
+          : { op: "full" as const, openuiDocument }
+
         const res = await fetch("/api/canvas", {
           method: "POST",
           headers: {
@@ -446,7 +545,7 @@ export function useMissionLive(opts: {
           },
           body: JSON.stringify({
             conversationId: opts.conversationId,
-            patch: { op: "full", openuiDocument },
+            patch,
           }),
         })
         if (res.ok) {
@@ -457,7 +556,7 @@ export function useMissionLive(opts: {
         /* ignore */
       }
     },
-    [getAccessToken, opts.conversationId]
+    [getAccessToken, opts.conversationId, canvasModel?.openuiDocument]
   )
 
   const missionAction = useCallback(
@@ -561,6 +660,35 @@ export function useMissionLive(opts: {
     [getAccessToken, opts.conversationId, activeMissionId, refreshLiveStatus]
   )
 
+  const moveSlot = useCallback(
+    async (slotId: string, x: number, y: number) => {
+      const token = await getAccessToken()
+      if (!token || !slotId) return
+      applyPatchLocal({
+        op: "move",
+        widgetId: slotId,
+        x,
+        y,
+      })
+      try {
+        await fetch("/api/canvas", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            conversationId: opts.conversationId,
+            patch: { op: "move", widgetId: slotId, x, y },
+          }),
+        })
+      } catch {
+        /* optimistic local move already applied */
+      }
+    },
+    [getAccessToken, opts.conversationId, applyPatchLocal]
+  )
+
   return {
     liveActive,
     agentEvents,
@@ -574,6 +702,7 @@ export function useMissionLive(opts: {
     setCanvasModel,
     missionAction,
     switchMarket,
+    moveSlot,
     refreshLiveStatus,
     refreshCanvas,
     syncCanvasShell,

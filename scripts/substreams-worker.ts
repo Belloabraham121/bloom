@@ -6,6 +6,12 @@
  * subgraph poller always publishes MarketEvents for the mission runner.
  */
 
+import { config as loadEnv } from "dotenv"
+import { resolve } from "path"
+
+loadEnv({ path: resolve(process.cwd(), ".env.local") })
+loadEnv({ path: resolve(process.cwd(), ".env") })
+
 import { startMarketPoller } from "../server/services/substreams/poller"
 import { runSubstreamsSmoke } from "../server/services/substreams/smoke"
 import { ensureMissionRunner } from "../server/services/missions/runner"

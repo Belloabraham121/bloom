@@ -165,6 +165,8 @@ export function InfiniteCanvasStage({
       ref={stageRef}
       className={cn("relative h-full w-full touch-none overflow-hidden", className)}
       data-canvas-pan-surface
+      data-canvas-zoom={camera.zoom}
+      style={{ ["--canvas-zoom" as string]: String(camera.zoom) }}
     >
       <div
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,hsl(var(--muted)/0.12)_1px,transparent_1px)] [background-size:24px_24px]"

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, memo } from "react"
 import { ChevronDown, ChevronUp, User } from "lucide-react"
 import Image from "next/image"
 import type { Message } from "./chat-shell"
@@ -44,10 +44,11 @@ function toModalEntries(messages: Message[], isStreaming: boolean): ModalEntry[]
     if (!message.content.trim()) continue
 
     if (looksLikeOpenUI(message.content, streamingThis)) {
-      const caption =
-        extractOpenUICaption(message.content) ||
-        (streamingThis ? "Updating canvas…" : "Canvas updated")
-      entries.push({ kind: "canvas", id: message.id, caption })
+      const caption = extractOpenUICaption(message.content)
+      // Do not attach "Updating canvas…" to agent GenUI — board status lives in top HUD only
+      if (caption) {
+        entries.push({ kind: "canvas", id: message.id, caption })
+      }
       continue
     }
 
@@ -76,7 +77,10 @@ function previewFor(entry: ModalEntry | undefined): string {
     : entry.content
 }
 
-export function ChatTranscript({ messages, isStreaming }: ChatTranscriptProps) {
+export const ChatTranscript = memo(function ChatTranscript({
+  messages,
+  isStreaming,
+}: ChatTranscriptProps) {
   const entries = toModalEntries(messages, isStreaming)
   const last = entries[entries.length - 1]
   const lastIsText =
@@ -185,4 +189,4 @@ export function ChatTranscript({ messages, isStreaming }: ChatTranscriptProps) {
       </div>
     </div>
   )
-}
+})

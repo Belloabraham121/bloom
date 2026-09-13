@@ -39,7 +39,7 @@ export async function GET(request: Request) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(msg)}\n\n`))
         }
 
-        const recent = await getRecentAgentEvents(user.id, 40)
+        const recent = await getRecentAgentEvents(user.id, 8)
         for (const m of recent.reverse()) {
           if (m.type === "canvas_patch") send(m)
         }

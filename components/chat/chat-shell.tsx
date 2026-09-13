@@ -1,16 +1,16 @@
 "use client"
 
-import { useEffect, useState, useCallback, useRef } from "react"
+import { useEffect, useState, useCallback, useRef, useMemo, type MutableRefObject } from "react"
 import { MessageSquare } from "lucide-react"
 import { AgentCanvas } from "./agent-canvas"
 import { ChatTranscript } from "./chat-transcript"
 import { Composer, type AIModel } from "./composer"
 import { ConversationsSidebar } from "./conversations-sidebar"
 import { SettingsPopover } from "./settings-popover"
-import { LiveFeedProvider } from "./live-feed-context"
-import { TransactionHub } from "./transaction-hub"
-import { useMissionLive } from "./use-mission-live"
+import { LiveFeedBridge } from "./live-feed-bridge"
+import { useLiveFeed, useCanvasFeed } from "./live-feed-context"
 import { Button } from "@/components/ui/button"
+import { TransactionHub } from "./transaction-hub"
 import { usePrivy } from "@privy-io/react-auth"
 import Image from "next/image"
 import Link from "next/link"
@@ -388,104 +388,6 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
     [isStreaming, selectedModel, getAccessToken]
   )
 
-  const {
-    liveActive,
-    agentEvents,
-    working,
-    tapeRows,
-    lastTick,
-    tickHistory,
-    watchedPair,
-    canvasModel,
-    missionAction,
-    switchMarket,
-    refreshLiveStatus,
-    syncCanvasShell,
-  } = useMissionLive({
-    conversationId: activeId,
-    chainId: 1,
-    refreshKey: messages.length,
-  })
-
-  const liveFromCanvas = Boolean(
-    (canvasModel?.widgets?._live?.props as { active?: boolean } | undefined)
-      ?.active
-  )
-  const feedLiveActive = liveActive || liveFromCanvas
-
-  useEffect(() => {
-    if (!isStreaming) void refreshLiveStatus()
-  }, [isStreaming, refreshLiveStatus])
-
-  useEffect(() => {
-    const onConfirm = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ preparedJson?: string | null }>)
-        .detail
-      const raw = detail?.preparedJson
-      if (!raw) return
-      void (async () => {
-        try {
-          const prepared = JSON.parse(raw) as {
-            chainId: number
-            to: string
-            data?: string
-            value?: string
-            category?: string
-            tradeIntentId?: string
-          }
-          const token = await getAccessToken()
-          if (!token) return
-          await fetch("/api/wallet/execute", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              ...prepared,
-              data: prepared.data || "0x",
-              conversationId: activeId,
-              requireAutonomous: false,
-            }),
-          })
-          void refreshLiveStatus()
-        } catch (e) {
-          console.error("confirm-tx failed", e)
-        }
-      })()
-    }
-    window.addEventListener("bloom:confirm-tx", onConfirm)
-    return () => window.removeEventListener("bloom:confirm-tx", onConfirm)
-  }, [getAccessToken, activeId, refreshLiveStatus])
-
-  const handleOpenUIAction = useCallback(
-    (event: ActionEvent) => {
-      if (event.type === BuiltinActionType.OpenUrl) {
-        const url = event.params?.url
-        if (typeof url === "string" && /^https?:\/\//i.test(url)) {
-          window.open(url, "_blank", "noopener,noreferrer")
-        }
-        return
-      }
-      if (event.type === BuiltinActionType.ContinueConversation) {
-        const text =
-          (typeof event.humanFriendlyMessage === "string" &&
-            event.humanFriendlyMessage.trim()) ||
-          (typeof event.params?.context === "string" && event.params.context) ||
-          ""
-        if (!text) return
-        // Live Pause/Play/Stop must hit /api/market/watch — never the LLM
-        const control = parseLiveMarketControl(text)
-        if (control) {
-          void missionAction(control)
-          return
-        }
-        void sendMessage(text)
-      }
-    },
-    [sendMessage, missionAction]
-  )
-
   const retry = useCallback(() => {
     if (messages.length === 0) return
     const lastUserMessage = [...messages].reverse().find((m) => m.role === "user")
@@ -509,33 +411,173 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   const displayName = userName || userEmail.split("@")[0]
   const walletLabel = walletAddress ? shortenAddress(walletAddress) : null
 
+  // Stable children identity: LiveFeedBridge re-renders on ticks without rebuilding chrome
+  const board = useMemo(
+    () => (
+      <ChatShellBoard
+        messages={messages}
+        isStreaming={isStreaming}
+        error={error}
+        onRetry={retry}
+        isLoaded={isLoaded}
+        displayName={displayName}
+        conversationKey={activeId}
+        sendMessage={sendMessage}
+        getAccessToken={getAccessToken}
+        sidebarOpen={sidebarOpen}
+        setSidebarOpen={setSidebarOpen}
+        conversations={conversations}
+        onSelectConversation={switchConversation}
+        onNewConversation={handleNewConversation}
+        onDeleteConversation={handleDeleteConversation}
+        userEmail={userEmail}
+        walletLabel={walletLabel}
+        walletAddress={walletAddress ?? null}
+        walletBalanceLabel={walletBalanceLabel}
+        onLogout={handleLogout}
+        onStop={stopStreaming}
+        selectedModel={selectedModel}
+        onModelChange={handleModelChange}
+      />
+    ),
+    [
+      messages,
+      isStreaming,
+      error,
+      retry,
+      isLoaded,
+      displayName,
+      activeId,
+      sendMessage,
+      getAccessToken,
+      sidebarOpen,
+      conversations,
+      switchConversation,
+      handleNewConversation,
+      handleDeleteConversation,
+      userEmail,
+      walletLabel,
+      walletAddress,
+      walletBalanceLabel,
+      stopStreaming,
+      selectedModel,
+      handleModelChange,
+    ]
+  )
+
   return (
-    <LiveFeedProvider
-      value={{
-        liveActive: feedLiveActive,
-        working,
-        events: agentEvents,
-        tapeRows,
-        lastTick,
-        tickHistory,
-        watchedPair,
-        missionAction,
-        switchMarket,
-        canvasModel,
-      }}
+    <LiveFeedBridge
+      conversationId={activeId}
+      chainId={1}
+      refreshKey={messages.length}
     >
+      {board}
+    </LiveFeedBridge>
+  )
+}
+
+function ChatShellBoard({
+  messages,
+  isStreaming,
+  error,
+  onRetry,
+  isLoaded,
+  displayName,
+  conversationKey,
+  sendMessage,
+  getAccessToken,
+  sidebarOpen,
+  setSidebarOpen,
+  conversations,
+  onSelectConversation,
+  onNewConversation,
+  onDeleteConversation,
+  userEmail,
+  walletLabel,
+  walletAddress,
+  walletBalanceLabel,
+  onLogout,
+  onStop,
+  selectedModel,
+  onModelChange,
+}: {
+  messages: Message[]
+  isStreaming: boolean
+  error: string | null
+  onRetry: () => void
+  isLoaded: boolean
+  displayName: string
+  conversationKey: string | null
+  sendMessage: (content: string, imageData?: string) => Promise<void>
+  getAccessToken: () => Promise<string | null>
+  sidebarOpen: boolean
+  setSidebarOpen: (open: boolean) => void
+  conversations: Conversation[]
+  onSelectConversation: (id: string) => void
+  onNewConversation: () => void
+  onDeleteConversation: (id: string) => void
+  userEmail: string
+  walletLabel: string | null
+  walletAddress: string | null
+  walletBalanceLabel: string | null
+  onLogout: () => void
+  onStop: () => void
+  selectedModel: AIModel
+  onModelChange: (model: AIModel) => void
+}) {
+  // Refs keep OpenUI actions / effects off the market-tick render path
+  const missionActionRef = useRef<
+    (action: string, missionId?: string | null) => Promise<void>
+  >(async () => {})
+  const refreshLiveStatusRef = useRef<() => Promise<boolean>>(async () => false)
+
+  const handleOpenUIAction = useCallback(
+    (event: ActionEvent) => {
+      if (event.type === BuiltinActionType.OpenUrl) {
+        const url = event.params?.url
+        if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+          window.open(url, "_blank", "noopener,noreferrer")
+        }
+        return
+      }
+      if (event.type === BuiltinActionType.ContinueConversation) {
+        const text =
+          (typeof event.humanFriendlyMessage === "string" &&
+            event.humanFriendlyMessage.trim()) ||
+          (typeof event.params?.context === "string" && event.params.context) ||
+          ""
+        if (!text) return
+        const control = parseLiveMarketControl(text)
+        if (control) {
+          void missionActionRef.current(control)
+          return
+        }
+        void sendMessage(text)
+      }
+    },
+    [sendMessage]
+  )
+
+  return (
     <div className="relative h-dvh overflow-hidden bg-background">
+      <LiveFeedRefSync
+        missionActionRef={missionActionRef}
+        refreshLiveStatusRef={refreshLiveStatusRef}
+        isStreaming={isStreaming}
+        conversationKey={conversationKey}
+        getAccessToken={getAccessToken}
+      />
+
       <ConversationsSidebar
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         conversations={conversations}
-        activeId={activeId}
-        onSelect={switchConversation}
-        onNew={handleNewConversation}
-        onDelete={handleDeleteConversation}
+        activeId={conversationKey}
+        onSelect={onSelectConversation}
+        onNew={onNewConversation}
+        onDelete={onDeleteConversation}
       />
 
-      {/* Top chrome: icons only — canvas stays clear */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 px-4 pt-4">
         <div className="pointer-events-auto flex items-center gap-2">
           <Link href="/" className="flex items-center">
@@ -578,52 +620,109 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
             email={userEmail}
             walletLabel={walletLabel}
             walletAddress={walletAddress}
-            onLogout={handleLogout}
+            onLogout={onLogout}
           />
         </div>
       </div>
 
-      {/* Full-bleed agent canvas */}
       <AgentCanvas
         messages={messages}
         isStreaming={isStreaming}
         error={error}
-        onRetry={retry}
+        onRetry={onRetry}
         isLoaded={isLoaded}
         username={displayName}
         onOpenUIAction={handleOpenUIAction}
-        conversationKey={activeId}
-        onShellDocument={syncCanvasShell}
+        conversationKey={conversationKey}
         topOffsetClassName="pt-16"
         bottomOffsetClassName="pb-44 sm:pb-48"
       />
 
-      {/* Floating transaction hub — screen space, not canvas */}
-      <TransactionHub
-        getAccessToken={getAccessToken}
-        liveActive={feedLiveActive}
-        working={working}
-        tapeRows={tapeRows}
-        agentEvents={agentEvents}
-        missionAction={missionAction}
-      />
+      <TransactionHub getAccessToken={getAccessToken} />
 
-      {/* Bottom chat: transcript above input */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 pb-4">
         <div className="pointer-events-none px-4">
           <ChatTranscript messages={messages} isStreaming={isStreaming} />
         </div>
         <Composer
           onSend={sendMessage}
-          onStop={stopStreaming}
+          onStop={onStop}
           isStreaming={isStreaming}
           disabled={!!error}
           selectedModel={selectedModel}
-          onModelChange={handleModelChange}
+          onModelChange={onModelChange}
           placement="bottom"
         />
       </div>
     </div>
-    </LiveFeedProvider>
   )
+}
+
+/** Tiny consumer — updates refs + effects without re-rendering the board chrome. */
+function LiveFeedRefSync({
+  missionActionRef,
+  refreshLiveStatusRef,
+  isStreaming,
+  conversationKey,
+  getAccessToken,
+}: {
+  missionActionRef: MutableRefObject<
+    (action: string, missionId?: string | null) => Promise<void>
+  >
+  refreshLiveStatusRef: MutableRefObject<() => Promise<boolean>>
+  isStreaming: boolean
+  conversationKey: string | null
+  getAccessToken: () => Promise<string | null>
+}) {
+  const { missionAction } = useLiveFeed()
+  const { refreshLiveStatus } = useCanvasFeed()
+  missionActionRef.current = missionAction
+  refreshLiveStatusRef.current = refreshLiveStatus
+
+  useEffect(() => {
+    if (!isStreaming) void refreshLiveStatus()
+  }, [isStreaming, refreshLiveStatus])
+
+  useEffect(() => {
+    const onConfirm = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ preparedJson?: string | null }>)
+        .detail
+      const raw = detail?.preparedJson
+      if (!raw) return
+      void (async () => {
+        try {
+          const prepared = JSON.parse(raw) as {
+            chainId: number
+            to: string
+            data?: string
+            value?: string
+            category?: string
+            tradeIntentId?: string
+          }
+          const token = await getAccessToken()
+          if (!token) return
+          await fetch("/api/wallet/execute", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              ...prepared,
+              data: prepared.data || "0x",
+              conversationId: conversationKey,
+              requireAutonomous: false,
+            }),
+          })
+          void refreshLiveStatusRef.current()
+        } catch (e) {
+          console.error("confirm-tx failed", e)
+        }
+      })()
+    }
+    window.addEventListener("bloom:confirm-tx", onConfirm)
+    return () => window.removeEventListener("bloom:confirm-tx", onConfirm)
+  }, [getAccessToken, conversationKey, refreshLiveStatusRef])
+
+  return null
 }
