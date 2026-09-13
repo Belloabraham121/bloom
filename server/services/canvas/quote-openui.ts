@@ -38,6 +38,25 @@ function pickOutputAmount(quote: Record<string, unknown>): string {
   return "—"
 }
 
+export function pickOutputAmountRaw(quote: unknown): string | null {
+  const q = quote as Record<string, unknown> | undefined
+  if (!q) return null
+  const nested = q.quote as Record<string, unknown> | undefined
+  const candidates = [
+    q.output,
+    q.amountOut,
+    nested?.output,
+    nested?.amountOut,
+    (nested?.output as Record<string, unknown> | undefined)?.amount,
+    (q.output as Record<string, unknown> | undefined)?.amount,
+  ]
+  for (const c of candidates) {
+    if (typeof c === "string" && c) return c
+    if (typeof c === "number" && Number.isFinite(c)) return String(c)
+  }
+  return null
+}
+
 export function buildPreparedJsonFromSwapResult(
   result: unknown,
   fallbackChainId: number

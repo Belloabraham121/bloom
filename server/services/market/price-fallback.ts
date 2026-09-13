@@ -194,6 +194,42 @@ async function fromBinance(
 }
 
 /**
+ * Fetch one spot price pair without publishing. Returns the first reachable
+ * source so demo feeds can share the same real prices as live market ingest.
+ */
+export async function fetchSpotPrices(
+  symbol0: string,
+  symbol1: string
+): Promise<{
+  p0: number;
+  p1: number;
+  pairPrice: number;
+  source: "coingecko" | "defillama" | "binance";
+} | null> {
+  const s0 = (symbol0 || "USDC").toLowerCase();
+  const s1 = (symbol1 || "ETH").toLowerCase();
+  const id0 = LLAMA_IDS[s0] || "usd-coin";
+  const id1 = LLAMA_IDS[s1] || "ethereum";
+
+  const cg = await fromCoinGecko(id0, id1);
+  if (cg) {
+    return { p0: cg.p0, p1: cg.p1, pairPrice: cg.p1 / cg.p0, source: "coingecko" };
+  }
+
+  const llama = await fromDefiLlama(id0, id1);
+  if (llama) {
+    return { p0: llama.p0, p1: llama.p1, pairPrice: llama.p1 / llama.p0, source: "defillama" };
+  }
+
+  const binance = await fromBinance(s0, s1);
+  if (binance) {
+    return { p0: binance.p0, p1: binance.p1, pairPrice: binance.pairPrice, source: "binance" };
+  }
+
+  return null;
+}
+
+/**
  * Publish one spot tick for the watched pair. Returns 1 on success, 0 on soft failure.
  */
 export async function pollCoinGeckoPriceOnce(opts: {
