@@ -25,6 +25,13 @@ export async function POST(request: Request) {
       )
     }
 
+    if (!body.tradeIntentId) {
+      return NextResponse.json(
+        { error: "tradeIntentId is required" },
+        { status: 400 }
+      )
+    }
+
     const result = await executePreparedTx({
       userId: user.id,
       agentMode: user.agentMode,

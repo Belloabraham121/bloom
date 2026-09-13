@@ -20,6 +20,13 @@ type CachedAuth = {
 const tokenCache = new Map<string, CachedAuth>()
 const userCache = new Map<string, { user: AuthUser; expiresAt: number }>()
 
+const MAX_CACHE_SIZE = 10_000
+
+function evictOldest(cache: Map<string, unknown>) {
+  if (cache.size <= MAX_CACHE_SIZE) return
+  const first = cache.keys().next().value
+  if (first) cache.delete(first)
+}
 function getPrivy() {
   const appId = process.env.PRIVY_APP_ID || process.env.NEXT_PUBLIC_PRIVY_APP_ID
   const appSecret = process.env.PRIVY_APP_SECRET
@@ -56,7 +63,9 @@ function writeTokenCache(token: string, user: AuthUser, expSec?: number) {
   const expiresAt = Math.min(fromExp - 5_000, now + 10 * 60_000)
   if (expiresAt <= now) return
   tokenCache.set(tokenKey(token), { user, expiresAt })
+  evictOldest(tokenCache)
   userCache.set(user.privyUserId, { user, expiresAt: now + 60_000 })
+  evictOldest(userCache)
 }
 
 function isTimeoutError(error: unknown) {
@@ -107,7 +116,24 @@ async function resolveDbUser(privyUserId: string): Promise<AuthUser> {
       privyUserId,
       agentMode: "human_mediated",
     })
+    .onConflictDoNothing()
     .returning()
+
+  if (!created) {
+    // Race: another request created it first — re-fetch
+    const retried = await db.query.users.findFirst({
+      where: eq(users.privyUserId, privyUserId),
+    })
+    if (!retried) throw new Error("Failed to create user")
+    const user: AuthUser = {
+      id: retried.id,
+      privyUserId: retried.privyUserId,
+      email: retried.email,
+      agentMode: (retried.agentMode as AgentMode) || "human_mediated",
+    }
+    userCache.set(privyUserId, { user, expiresAt: Date.now() + 60_000 })
+    return user
+  }
 
   const user: AuthUser = {
     id: created.id,

@@ -9,6 +9,19 @@ export interface FetchedContent {
   url: string
 }
 
+function isPrivateUrl(urlStr: string): boolean {
+  try {
+    const parsed = new URL(urlStr)
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return true
+    const host = parsed.hostname.toLowerCase()
+    if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true
+    if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("172.")) return true
+    if (host === "169.254.169.254" || host.startsWith("169.254.")) return true
+    if (host.endsWith(".internal") || host.endsWith(".local")) return true
+    return false
+  } catch { return true }
+}
+
 const CONTENT_SELECTORS = [
   "article",
   "main",
@@ -51,6 +64,13 @@ const REMOVE_SELECTORS = [
 ]
 
 export async function fetchUrlContent(url: string): Promise<FetchedContent> {
+  if (isPrivateUrl(url)) {
+    throw new Error("URL blocked: private/internal addresses not allowed")
+  }
+  if (process.env.NODE_ENV === "production" && !url.startsWith("https://")) {
+    throw new Error("Only HTTPS URLs allowed")
+  }
+
   const response = await fetch(url, {
     headers: {
       "User-Agent":
