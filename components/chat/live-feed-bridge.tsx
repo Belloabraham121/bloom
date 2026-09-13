@@ -21,6 +21,7 @@ export function LiveFeedBridge({
 }) {
   const {
     liveActive,
+    liveAvailable,
     agentEvents,
     working,
     tapeRows,
@@ -29,6 +30,7 @@ export function LiveFeedBridge({
     watchedPair,
     canvasModel,
     missionAction,
+    resumeLive,
     switchMarket,
     moveSlot,
     syncCanvasShell,
@@ -48,6 +50,7 @@ export function LiveFeedBridge({
   const market = useMemo(
     () => ({
       liveActive: feedLiveActive,
+      liveAvailable,
       working,
       events: agentEvents,
       tapeRows,
@@ -55,10 +58,12 @@ export function LiveFeedBridge({
       tickHistory,
       watchedPair,
       missionAction,
+      resumeLive,
       switchMarket,
     }),
     [
       feedLiveActive,
+      liveAvailable,
       working,
       agentEvents,
       tapeRows,
@@ -66,6 +71,7 @@ export function LiveFeedBridge({
       tickHistory,
       watchedPair,
       missionAction,
+      resumeLive,
       switchMarket,
     ]
   )

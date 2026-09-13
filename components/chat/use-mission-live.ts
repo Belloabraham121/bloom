@@ -30,6 +30,7 @@ export function useMissionLive(opts: {
 }) {
   const { getAccessToken } = usePrivy()
   const [liveActive, setLiveActive] = useState(false)
+  const [liveAvailable, setLiveAvailable] = useState(false)
   const [agentEvents, setAgentEvents] = useState<LiveAgentStep[]>([])
   const [working, setWorking] = useState(false)
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null)
@@ -753,8 +754,11 @@ export function useMissionLive(opts: {
     [getAccessToken, opts.conversationId, applyPatchLocal]
   )
 
+  const resumeLive = useCallback(() => missionAction("resume"), [missionAction])
+
   return {
     liveActive,
+    liveAvailable,
     agentEvents,
     working,
     activeMissionId,
@@ -765,6 +769,7 @@ export function useMissionLive(opts: {
     canvasModel,
     setCanvasModel,
     missionAction,
+    resumeLive,
     switchMarket,
     moveSlot,
     refreshLiveStatus,

@@ -21,6 +21,7 @@ export type LiveTickPoint = {
 /** Market / mission live stream — updates often (ticks). */
 export type MarketFeedState = {
   liveActive: boolean
+  liveAvailable: boolean
   working: boolean
   events: LiveAgentStep[]
   tapeRows: TradeTapeRow[]
@@ -28,6 +29,7 @@ export type MarketFeedState = {
   tickHistory: LiveTickPoint[]
   watchedPair: { symbol0: string; symbol1: string } | null
   missionAction: (action: string, missionId?: string | null) => Promise<void>
+  resumeLive: () => Promise<void>
   switchMarket: (symbol0: string, symbol1: string) => Promise<void>
 }
 
@@ -41,6 +43,7 @@ export type CanvasFeedState = {
 
 const defaultMarket: MarketFeedState = {
   liveActive: false,
+  liveAvailable: false,
   working: false,
   events: [],
   tapeRows: [],
@@ -48,6 +51,7 @@ const defaultMarket: MarketFeedState = {
   tickHistory: [],
   watchedPair: null,
   missionAction: async () => {},
+  resumeLive: async () => {},
   switchMarket: async () => {},
 }
 
@@ -74,6 +78,7 @@ export function LiveFeedProvider({
     () => market,
     [
       market.liveActive,
+      market.liveAvailable,
       market.working,
       market.events,
       market.tapeRows,
@@ -81,6 +86,7 @@ export function LiveFeedProvider({
       market.tickHistory,
       market.watchedPair,
       market.missionAction,
+      market.resumeLive,
       market.switchMarket,
     ]
   )
