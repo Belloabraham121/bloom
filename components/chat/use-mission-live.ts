@@ -48,6 +48,7 @@ export function useMissionLive(opts: {
   const lastMarketEsErrorAtRef = useRef(0)
   const liveSlotHealedRef = useRef<string | null>(null)
   const getAccessTokenRef = useRef(getAccessToken)
+  const canvasRevisionRef = useRef(0)
   const refreshLiveStatusRef = useRef<(
     () => Promise<boolean>
   ) | null>(null)
@@ -58,6 +59,30 @@ export function useMissionLive(opts: {
   )
 
   getAccessTokenRef.current = getAccessToken
+
+  /** Fetch a short-lived SSE ticket for EventSource auth (avoids token in URL). */
+  const fetchSseTicket = useCallback(async (): Promise<string | null> => {
+    try {
+      const token = await getAccessTokenRef.current()
+      if (!token) return null
+      const res = await fetch("/api/auth/sse-ticket", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return null
+      const data = await res.json()
+      return data.ticket || null
+    } catch {
+      return null
+    }
+  }, [])
+
+  // Keep canvasRevisionRef in sync with latest canvas revision
+  useEffect(() => {
+    if (canvasModel?.revision != null) {
+      canvasRevisionRef.current = canvasModel.revision
+    }
+  }, [canvasModel?.revision])
 
   const applyPatchLocal = useCallback(
     (patch: CanvasPatchOp) => {
@@ -190,19 +215,14 @@ export function useMissionLive(opts: {
       if (data.session?.paused) setWorking(false)
       return active
     } catch {
-      setLiveActive(false)
+      // Network error — preserve current live UI state (don't kill the session)
       return false
     }
   }, [getAccessToken, opts.conversationId])
 
   refreshLiveStatusRef.current = refreshLiveStatus
 
-  // Load canvas whenever conversation changes / after chat turns
-  useEffect(() => {
-    void refreshCanvas()
-  }, [refreshCanvas, opts.refreshKey])
-
-  // Poll live-status
+  // Poll live-status (conversation-scoped, not on every refreshKey)
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -216,17 +236,32 @@ export function useMissionLive(opts: {
       cancelled = true
       clearInterval(id)
     }
-  }, [refreshLiveStatus, opts.refreshKey, opts.conversationId])
+  }, [refreshLiveStatus, opts.conversationId])
 
   // Always-on canvas patch SSE (incremental OpenUI slots)
   useEffect(() => {
+    // Close existing connection immediately (before async)
+    canvasEsRef.current?.close()
+    canvasEsRef.current = null
+
     let cancelled = false
 
     void (async () => {
-      const token = await getAccessTokenRef.current()
-      if (!token || cancelled) return
+      // Prefer short-lived ticket; fall back to access_token
+      const ticket = await fetchSseTicket()
+      if (cancelled) return
+      const qs = new URLSearchParams({
+        conversationId: opts.conversationId || "",
+      })
+      if (ticket) {
+        qs.set("ticket", ticket)
+      } else {
+        const token = await getAccessTokenRef.current()
+        if (!token || cancelled) return
+        qs.set("access_token", token)
+      }
 
-      const url = `/api/canvas/live?conversationId=${encodeURIComponent(opts.conversationId || "")}&access_token=${encodeURIComponent(token)}`
+      const url = `/api/canvas/live?${qs.toString()}`
       const es = new EventSource(url)
       canvasEsRef.current = es
 
@@ -242,11 +277,23 @@ export function useMissionLive(opts: {
             data?: unknown
             x?: number
             y?: number
+            revision?: number
           }
           if (msg.type !== "canvas_patch" || !msg.op) return
 
           // Ignore pool_table lastTick noise if any old servers still emit it
           if (msg.widgetId === "pool_table" && msg.path === "lastTick") return
+
+          // Revision gate: if the server sends a revision and it's not the next
+          // sequential one, refetch the full canvas to avoid divergence.
+          if (
+            msg.revision != null &&
+            canvasRevisionRef.current > 0 &&
+            msg.revision !== canvasRevisionRef.current + 1
+          ) {
+            void refreshCanvas()
+            return
+          }
 
           applyPatchLocal({
             op: msg.op,
@@ -304,27 +351,35 @@ export function useMissionLive(opts: {
       canvasEsRef.current?.close()
       canvasEsRef.current = null
     }
-  }, [opts.conversationId, opts.chainId, applyPatchLocal])
+  }, [opts.conversationId, opts.chainId, applyPatchLocal, fetchSseTicket])
 
   // Market / agent SSE while live session OR canvas _live flag is on
   useEffect(() => {
+    // Close existing connection immediately (before async)
+    marketEsRef.current?.close()
+    marketEsRef.current = null
+
     const shouldConnect = liveActive || canvasLiveActive
     if (!shouldConnect) {
-      marketEsRef.current?.close()
-      marketEsRef.current = null
       return
     }
 
     let cancelled = false
 
     void (async () => {
-      const token = await getAccessTokenRef.current()
-      if (!token || cancelled) return
-
+      // Prefer short-lived ticket; fall back to access_token
+      const ticket = await fetchSseTicket()
+      if (cancelled) return
       const qs = new URLSearchParams({
         chainId: String(opts.chainId || 1),
-        access_token: token,
       })
+      if (ticket) {
+        qs.set("ticket", ticket)
+      } else {
+        const token = await getAccessTokenRef.current()
+        if (!token || cancelled) return
+        qs.set("access_token", token)
+      }
       if (opts.conversationId) {
         qs.set("conversationId", opts.conversationId)
       }
@@ -502,7 +557,7 @@ export function useMissionLive(opts: {
       marketEsRef.current?.close()
       marketEsRef.current = null
     }
-  }, [liveActive, canvasLiveActive, opts.chainId, opts.conversationId])
+  }, [liveActive, canvasLiveActive, opts.chainId, opts.conversationId, fetchSseTicket])
 
   // Clear live market UI when session ends — keep canvas slots/shell
   useEffect(() => {
@@ -526,12 +581,21 @@ export function useMissionLive(opts: {
       const token = await getAccessToken()
       if (!token || !openuiDocument.trim()) return
       try {
-        // First paint: store full shell. Later GenUI: route into quote slot so it is visible.
+        // First paint: store full shell. Later GenUI: route into the appropriate slot.
         const hasShell = Boolean(canvasModel?.openuiDocument?.trim())
+        // Detect which slot the content targets
+        let targetSlot = "quote" // default
+        if (hasShell) {
+          if (/LiveMarketChart|LiveMarketTick|LiveMarketSwitcher|LiveActivity|LiveTradeTape/.test(openuiDocument)) {
+            targetSlot = "live"
+          } else if (/BalanceBoard|ConfirmSend/.test(openuiDocument)) {
+            targetSlot = "wallet"
+          }
+        }
         const patch = hasShell
           ? {
               op: "replace" as const,
-              widgetId: "quote",
+              widgetId: targetSlot,
               kind: "openui" as const,
               data: { openui: openuiDocument },
             }

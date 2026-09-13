@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useCanvasShell, useCanvasFeed } from "./live-feed-context"
 import { InfiniteCanvasStage } from "./infinite-canvas-stage"
+import { OpenUIErrorBoundary } from "./error-boundary"
 
 interface AgentCanvasProps {
   messages: Message[]
@@ -209,12 +210,14 @@ export function AgentCanvas({
             >
               <ThemeProvider mode="dark" cssSelector=".openui-bloom">
                 <div className="openui-bloom w-full min-w-0 p-1 [&_.recharts-responsive-container]:!w-full">
-                  <Renderer
-                    library={bloomLibrary}
-                    response={document.content}
-                    isStreaming={document.isStreaming}
-                    onAction={onOpenUIAction}
-                  />
+                  <OpenUIErrorBoundary>
+                    <Renderer
+                      library={bloomLibrary}
+                      response={document.content}
+                      isStreaming={document.isStreaming}
+                      onAction={onOpenUIAction}
+                    />
+                  </OpenUIErrorBoundary>
                 </div>
               </ThemeProvider>
             </section>

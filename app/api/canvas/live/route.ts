@@ -23,6 +23,8 @@ export async function GET(request: Request) {
     const encoder = new TextEncoder()
     let cleanup: (() => Promise<void>) | null = null
     let closed = false
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+    let tornDown = false
 
     const matchesConversation = (msg: CanvasPatch) => {
       if (!conversationId) return true
@@ -48,15 +50,17 @@ export async function GET(request: Request) {
           send(message)
         )
 
-        const heartbeat = setInterval(() => {
+        heartbeatTimer = setInterval(() => {
           if (closed) return
           controller.enqueue(encoder.encode(`: ping\n\n`))
         }, 15_000)
 
-        const abort = () => {
-          if (closed) return
+        const teardown = () => {
+          if (tornDown) return
+          tornDown = true
           closed = true
-          clearInterval(heartbeat)
+          if (heartbeatTimer) clearInterval(heartbeatTimer)
+          heartbeatTimer = null
           void cleanup?.()
           try {
             controller.close()
@@ -65,11 +69,15 @@ export async function GET(request: Request) {
           }
         }
 
-        request.signal.addEventListener("abort", abort)
+        request.signal.addEventListener("abort", teardown)
       },
-      async cancel() {
+      cancel() {
+        if (tornDown) return
+        tornDown = true
         closed = true
-        await cleanup?.()
+        if (heartbeatTimer) clearInterval(heartbeatTimer)
+        heartbeatTimer = null
+        void cleanup?.()
       },
     })
 

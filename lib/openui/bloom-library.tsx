@@ -18,6 +18,7 @@ import {
 } from "@openuidev/react-ui/genui-lib"
 import { z } from "zod/v4"
 import { useLiveFeed, useCanvasSlot, useCanvasFeed } from "@/components/chat/live-feed-context"
+import { OpenUIErrorBoundary } from "@/components/chat/error-boundary"
 import { AnimatedOrb } from "@/components/chat/animated-orb"
 import { Button } from "@/components/ui/button"
 import { GripVertical, Pause, Play, Square } from "lucide-react"
@@ -990,11 +991,13 @@ function CanvasSlotView({
         className="w-full min-w-0 rounded-b-xl"
         data-canvas-no-pan
       >
-        <Renderer
-          library={lib}
-          response={normalizeSlotOpenui(openui)}
-          isStreaming={false}
-        />
+        <OpenUIErrorBoundary>
+          <Renderer
+            library={lib}
+            response={normalizeSlotOpenui(openui)}
+            isStreaming={false}
+          />
+        </OpenUIErrorBoundary>
       </div>
     </div>
   )

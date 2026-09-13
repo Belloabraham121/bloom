@@ -103,10 +103,17 @@ export function SettingsPopover({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ agentMode: mode }),
+        body: JSON.stringify({
+          agentMode: mode,
+          // Step-up: server requires explicit confirmation for autonomous escalation
+          ...(mode === "autonomous" ? { confirmEscalation: true } : {}),
+        }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
+        if (data.requiresConfirmation) {
+          throw new Error("Please confirm you want to enable autonomous mode")
+        }
         throw new Error(data.error || "Failed to update settings")
       }
       setAgentMode(mode)
