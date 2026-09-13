@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { extractText } from "unpdf"
+import { requirePrivyUser } from "@/server/lib/auth"
 
 export async function POST(request: NextRequest) {
   try {
+    let _user
+    try {
+      _user = await requirePrivyUser(request)
+    } catch {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const formData = await request.formData()
     const file = formData.get("file") as File | null
 
@@ -14,8 +22,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "File must be a PDF" }, { status: 400 })
     }
 
+    if (file.size > 10 * 1024 * 1024) {
+      return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 })
+    }
+
     const arrayBuffer = await file.arrayBuffer()
     const result = await extractText(new Uint8Array(arrayBuffer))
+
+    if (result.totalPages > 200) {
+      return NextResponse.json({ error: "Too many pages (max 200)" }, { status: 400 })
+    }
     
     // extractText returns text as an array of strings (one per page)
     const textContent = Array.isArray(result.text) 

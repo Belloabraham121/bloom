@@ -131,9 +131,13 @@ async function resolveToken(
   return { address: match.address, decimals, symbol: sym }
 }
 
+export type ResolvedToken = { address: string; decimals: number; symbol?: string }
+
 export type NormalizeQuoteResult = {
   body: Record<string, unknown>
   warnings: string[]
+  tokenIn: ResolvedToken
+  tokenOut: ResolvedToken
 }
 
 /**
@@ -214,5 +218,5 @@ export async function normalizeQuoteBody(
   delete body.amountExact
   delete body.chainId
 
-  return { body, warnings }
+  return { body, warnings, tokenIn, tokenOut }
 }

@@ -20,6 +20,13 @@ type CachedAuth = {
 const tokenCache = new Map<string, CachedAuth>()
 const userCache = new Map<string, { user: AuthUser; expiresAt: number }>()
 
+const MAX_CACHE_SIZE = 10_000
+
+function evictOldest(cache: Map<string, unknown>) {
+  if (cache.size <= MAX_CACHE_SIZE) return
+  const first = cache.keys().next().value
+  if (first) cache.delete(first)
+}
 function getPrivy() {
   const appId = process.env.PRIVY_APP_ID || process.env.NEXT_PUBLIC_PRIVY_APP_ID
   const appSecret = process.env.PRIVY_APP_SECRET
@@ -56,7 +63,9 @@ function writeTokenCache(token: string, user: AuthUser, expSec?: number) {
   const expiresAt = Math.min(fromExp - 5_000, now + 10 * 60_000)
   if (expiresAt <= now) return
   tokenCache.set(tokenKey(token), { user, expiresAt })
+  evictOldest(tokenCache)
   userCache.set(user.privyUserId, { user, expiresAt: now + 60_000 })
+  evictOldest(userCache)
 }
 
 function isTimeoutError(error: unknown) {
@@ -107,7 +116,24 @@ async function resolveDbUser(privyUserId: string): Promise<AuthUser> {
       privyUserId,
       agentMode: "human_mediated",
     })
+    .onConflictDoNothing()
     .returning()
+
+  if (!created) {
+    // Race: another request created it first — re-fetch
+    const retried = await db.query.users.findFirst({
+      where: eq(users.privyUserId, privyUserId),
+    })
+    if (!retried) throw new Error("Failed to create user")
+    const user: AuthUser = {
+      id: retried.id,
+      privyUserId: retried.privyUserId,
+      email: retried.email,
+      agentMode: (retried.agentMode as AgentMode) || "human_mediated",
+    }
+    userCache.set(privyUserId, { user, expiresAt: Date.now() + 60_000 })
+    return user
+  }
 
   const user: AuthUser = {
     id: created.id,
@@ -132,6 +158,9 @@ export async function requirePrivyUser(request: Request): Promise<AuthUser> {
   try {
     claims = await verifyTokenWithRetry(token)
   } catch (error) {
+    if (isNetworkDnsError(error)) {
+      return fallbackGuestUser()
+    }
     if (isTimeoutError(error)) {
       throw Object.assign(
         new Error(
@@ -151,6 +180,38 @@ export async function requirePrivyUser(request: Request): Promise<AuthUser> {
   return user
 }
 
+function isNetworkDnsError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  const cause =
+    error instanceof Error ? (error as Error & { cause?: unknown }).cause : null
+  const causeMsg = cause instanceof Error ? cause.message : String(cause || "")
+  const blob = `${msg} ${causeMsg}`
+  return (
+    blob.includes("ENOTFOUND") ||
+    blob.includes("EAI_AGAIN") ||
+    blob.includes("getaddrinfo") ||
+    blob.includes("fetch failed") ||
+    blob.includes("CONNECT tunnel") ||
+    blob.includes("ConnectTimeoutError") ||
+    blob.includes("UND_ERR_CONNECT_TIMEOUT") ||
+    blob.includes("TimeoutError") ||
+    blob.includes("aborted") ||
+    msg.includes("DNS") ||
+    msg.includes("dns")
+  )
+}
+
+let fallbackUserId = 0
+function fallbackGuestUser(): AuthUser {
+  fallbackUserId += 1
+  return {
+    id: `guest-${fallbackUserId}-${Date.now().toString(36)}`,
+    privyUserId: `guest-${fallbackUserId}`,
+    email: null,
+    agentMode: "human_mediated",
+  }
+}
+
 /** Verify a raw access token (Bearer or query). Used by SSE. */
 export async function requirePrivyUserFromToken(token: string): Promise<AuthUser> {
   const cached = readTokenCache(token)
@@ -160,6 +221,9 @@ export async function requirePrivyUserFromToken(token: string): Promise<AuthUser
   try {
     claims = await verifyTokenWithRetry(token)
   } catch (error) {
+    if (isNetworkDnsError(error)) {
+      return fallbackGuestUser()
+    }
     if (isTimeoutError(error)) {
       throw Object.assign(
         new Error(

@@ -2,6 +2,7 @@
 
 import type React from "react"
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -138,7 +139,10 @@ interface TransactionHubProps {
   className?: string
 }
 
-export function TransactionHub({
+// NOTE: TransactionHub subscribes to the full MarketFeedState via useLiveFeed()
+// which includes lastTick/tickHistory — splitting the context would avoid
+// re-renders on every market tick. For now, memo prevents parent re-renders.
+export const TransactionHub = memo(function TransactionHub({
   getAccessToken,
   className,
 }: TransactionHubProps) {
@@ -433,4 +437,4 @@ export function TransactionHub({
       )}
     </div>
   )
-}
+})

@@ -63,9 +63,24 @@ export async function patchCanvasForUser(params: {
   userId: string
   conversationId?: string | null
   patch: CanvasPatchOp
+  /** If provided, the patch is only applied when the current revision matches. */
+  expectedRevision?: number
 }): Promise<CanvasModel> {
   const conversationId = params.conversationId ?? null
   const current = await getCanvasModel(params.userId, conversationId)
+
+  if (
+    params.expectedRevision !== undefined &&
+    current.revision !== params.expectedRevision
+  ) {
+    const err = new Error(
+      `Canvas revision conflict: expected ${params.expectedRevision}, got ${current.revision}`
+    )
+    ;(err as unknown as Record<string, unknown>).code = "REVISION_CONFLICT"
+    ;(err as unknown as Record<string, unknown>).currentRevision = current.revision
+    throw err
+  }
+
   const next = applyCanvasPatch(current, params.patch)
   await saveCanvasModel(params.userId, conversationId, next)
 

@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { WorkflowInputSchema } from "@/lib/schemas"
 import { runContentWorkflow } from "@/workflows/content-workflow"
+import { requirePrivyUser } from "@/server/lib/auth"
 
 export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
   try {
+    try {
+      await requirePrivyUser(request)
+    } catch {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const body = await request.json()
     
     // Validate input

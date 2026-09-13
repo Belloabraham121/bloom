@@ -23,6 +23,19 @@ import type { AgentMode } from "@/lib/types"
 import { publishAgentEvent } from "@/server/services/market/bus"
 
 const lastRun = new Map<string, number>()
+
+let cachedMissions: { missions: Awaited<ReturnType<typeof listRunningMissions>>; expiresAt: number } | null = null
+const CACHE_TTL = 10_000
+
+async function getRunningMissions() {
+  if (cachedMissions && cachedMissions.expiresAt > Date.now()) {
+    return cachedMissions.missions
+  }
+  const missions = await listRunningMissions()
+  cachedMissions = { missions, expiresAt: Date.now() + CACHE_TTL }
+  return missions
+}
+
 let started = false
 let starting: Promise<void> | null = null
 let unsubscribe: (() => Promise<void>) | null = null
@@ -34,7 +47,7 @@ const MARKET_CHAINS = [1, 10, 137, 8453, 42161]
 const HEARTBEAT_MS = 30_000
 
 async function handleMarket(event: MarketEvent) {
-  const running = await listRunningMissions()
+  const running = await getRunningMissions()
   for (const mission of running) {
     if (await isKillSwitchOn(mission.userId)) {
       await updateMission(mission.id, mission.userId, {

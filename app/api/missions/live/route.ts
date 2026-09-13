@@ -96,6 +96,9 @@ export async function GET(request: Request) {
     const encoder = new TextEncoder()
     let cleanup: (() => Promise<void>) | null = null
     let closed = false
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+    let pollTimer: ReturnType<typeof setInterval> | null = null
+    let tornDown = false
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -134,20 +137,23 @@ export async function GET(request: Request) {
         }
         void pollMarketOnce(pollOpts).catch(() => {})
         // Single slow poller — burst+per-SSE pollers stacked and froze the client
-        const slowPoll = setInterval(() => {
+        pollTimer = setInterval(() => {
           void pollMarketOnce(pollOpts).catch(() => {})
         }, 8_000)
 
-        const heartbeat = setInterval(() => {
+        heartbeatTimer = setInterval(() => {
           if (closed) return
           controller.enqueue(encoder.encode(`: ping\n\n`))
         }, 15_000)
 
-        const abort = () => {
-          if (closed) return
+        const teardown = () => {
+          if (tornDown) return
+          tornDown = true
           closed = true
-          clearInterval(heartbeat)
-          clearInterval(slowPoll)
+          if (heartbeatTimer) clearInterval(heartbeatTimer)
+          if (pollTimer) clearInterval(pollTimer)
+          heartbeatTimer = null
+          pollTimer = null
           void cleanup?.()
           try {
             controller.close()
@@ -156,11 +162,17 @@ export async function GET(request: Request) {
           }
         }
 
-        request.signal.addEventListener("abort", abort)
+        request.signal.addEventListener("abort", teardown)
       },
-      async cancel() {
+      cancel() {
+        if (tornDown) return
+        tornDown = true
         closed = true
-        await cleanup?.()
+        if (heartbeatTimer) clearInterval(heartbeatTimer)
+        if (pollTimer) clearInterval(pollTimer)
+        heartbeatTimer = null
+        pollTimer = null
+        void cleanup?.()
       },
     })
 

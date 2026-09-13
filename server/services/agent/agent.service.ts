@@ -56,7 +56,7 @@ function truncate(text: string, max: number) {
   return `${text.slice(0, max)}\n…[truncated]`
 }
 
-/** Compact schemas — full Zod JSON Schema for every tool blows Claude's input limit. */
+/** Compact schemas — LLM sees permissive params; actual validation happens server-side via Zod. */
 const COMPACT_OBJECT_PARAMS = {
   type: "object",
   additionalProperties: true,
@@ -318,6 +318,21 @@ CANVAS RULES: After first paint, never emit root=Stack — use get_quote / start
                   : {}
               } catch {
                 args = { raw: call.function.arguments }
+              }
+
+              // Server-side Zod validation of tool arguments
+              if (handler && handler.parameters) {
+                const validation = handler.parameters.safeParse(args)
+                if (!validation.success) {
+                  const result = { error: `Invalid arguments: ${validation.error.issues.map((i: { message: string }) => i.message).join(", ")}` }
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: call.id,
+                    content: truncate(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
+                  })
+                  continue
+                }
+                args = validation.data
               }
 
               let result: unknown

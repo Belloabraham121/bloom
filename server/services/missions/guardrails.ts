@@ -41,15 +41,19 @@ export function checkChainAllowlist(
 export function checkMaxNotional(
   guardrails: MissionGuardrails,
   params: MissionParams,
-  amountIn?: string
+  amountIn?: string,
+  decimals?: number
 ): string | null {
   const cap =
     guardrails.maxNotionalUsd ??
     (params.maxNotionalUsd as number | undefined) ??
     (params.maxUsd as number | undefined)
   if (cap == null || amountIn == null) return null
-  const n = Number(amountIn)
+  let n = Number(amountIn)
   if (!Number.isFinite(n)) return null
+  if (decimals != null && decimals > 0) {
+    n = n / Math.pow(10, decimals)
+  }
   if (n > Number(cap)) return "above maxNotionalUsd"
   return null
 }
@@ -114,11 +118,12 @@ export async function assertExecutionGuardrails(opts: {
   tokenIn?: string
   tokenOut?: string
   amountIn?: string
+  decimals?: number
 }): Promise<string | null> {
   return (
     checkChainAllowlist(opts.guardrails, opts.chainId) ||
     checkTokenAllowlist(opts.guardrails, opts.tokenIn, opts.tokenOut) ||
-    checkMaxNotional(opts.guardrails, opts.params, opts.amountIn) ||
+    checkMaxNotional(opts.guardrails, opts.params, opts.amountIn, opts.decimals) ||
     (await checkDailyLossCap(opts.userId, opts.guardrails, opts.amountIn))
   )
 }
@@ -126,7 +131,7 @@ export async function assertExecutionGuardrails(opts: {
 /** Pure helpers for AgentQA unit smoke (no DB). */
 export function evaluateAllowlistsForTest(
   guardrails: MissionGuardrails,
-  opts: { chainId?: number; tokenIn?: string; tokenOut?: string; amountIn?: string; maxFromParams?: number }
+  opts: { chainId?: number; tokenIn?: string; tokenOut?: string; amountIn?: string; maxFromParams?: number; decimals?: number }
 ) {
   const params: MissionParams = {
     maxNotionalUsd: opts.maxFromParams,
@@ -134,6 +139,6 @@ export function evaluateAllowlistsForTest(
   return {
     chain: checkChainAllowlist(guardrails, opts.chainId),
     token: checkTokenAllowlist(guardrails, opts.tokenIn, opts.tokenOut),
-    notional: checkMaxNotional(guardrails, params, opts.amountIn),
+    notional: checkMaxNotional(guardrails, params, opts.amountIn, opts.decimals),
   }
 }

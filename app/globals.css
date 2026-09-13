@@ -185,8 +185,26 @@ body {
   }
 }
 
+/* Word-by-word blur reveal for streamed markdown — GPU-only, no React state */
+@keyframes word-reveal {
+  0% {
+    filter: blur(12px);
+    opacity: 0;
+  }
+  100% {
+    filter: blur(0px);
+    opacity: 1;
+  }
+}
+
 .animate-blur-reveal {
   animation: blur-reveal 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Per-word reveal: delay set inline via style prop */
+.animate-word-reveal {
+  animation: word-reveal 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-fill-mode: both;
 }
 
 /* Staggered blur reveal for children */

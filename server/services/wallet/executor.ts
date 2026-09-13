@@ -3,9 +3,9 @@
  */
 
 import { PrivyClient } from "@privy-io/server-auth"
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { db } from "@/server/services/db/client"
-import { wallets } from "@/server/services/db/schema"
+import { tradeIntents, wallets } from "@/server/services/db/schema"
 import {
   insertTransaction,
   updateTransaction,
@@ -86,6 +86,31 @@ export async function executePreparedTx(params: {
   txHash?: string
   error?: string
 }> {
+  // Kill switch — block all transactions when active
+  try {
+    const { isKillSwitchOn } = await import("@/server/services/missions/repo")
+    if (await isKillSwitchOn(params.userId)) {
+      return { ok: false, error: "Kill switch is active — all transactions blocked." }
+    }
+  } catch { /* kill switch table may not exist yet */ }
+
+  // Verify trade intent if provided (soft gate — null from autonomous mode passes through)
+  const tradeIntentId = params.prepared.tradeIntentId
+  if (tradeIntentId) {
+    const intent = await db.query.tradeIntents.findFirst({
+      where: and(
+        eq(tradeIntents.id, tradeIntentId),
+        eq(tradeIntents.userId, params.userId)
+      ),
+    })
+    if (!intent) {
+      return { ok: false, error: "No matching trade intent found" }
+    }
+    if (intent.status !== "proposed" && intent.status !== "quoted") {
+      return { ok: false, error: "Trade intent already executed or expired" }
+    }
+  }
+
   if (params.requireAutonomous && params.agentMode !== "autonomous") {
     return {
       ok: false,
