@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useEffect, useState, useCallback, useRef, useMemo, type MutableRefObject } from "react"
+import { memo, useEffect, useState, useCallback, useRef, useMemo, useDeferredValue, type MutableRefObject } from "react"
 import { MessageSquare } from "lucide-react"
 import { AgentCanvas } from "./agent-canvas"
 import { ChatTranscript } from "./chat-transcript"
@@ -79,6 +79,8 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   const activeIdRef = useRef<string | null>(null)
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const streamFlushRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const streamPendingRef = useRef("")
 
   useEffect(() => {
     messagesRef.current = messages
@@ -368,20 +370,41 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
 
         let accumulatedContent = ""
 
+        streamFlushRef.current = setInterval(() => {
+          if (streamPendingRef.current) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessage.id
+                  ? { ...msg, content: streamPendingRef.current }
+                  : msg
+              )
+            )
+            streamPendingRef.current = ""
+          }
+        }, 80)
+
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
 
           const chunk = decoder.decode(value, { stream: true })
           accumulatedContent += chunk
+          streamPendingRef.current = accumulatedContent
+        }
 
+        if (streamFlushRef.current) {
+          clearInterval(streamFlushRef.current)
+          streamFlushRef.current = null
+        }
+        if (streamPendingRef.current) {
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessage.id
-                ? { ...msg, content: accumulatedContent }
+                ? { ...msg, content: streamPendingRef.current }
                 : msg
             )
           )
+          streamPendingRef.current = ""
         }
 
         if (!accumulatedContent.trim()) {
@@ -413,6 +436,13 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
       } finally {
         setIsStreaming(false)
         setAbortController(null)
+        if (streamFlushRef.current) {
+          clearInterval(streamFlushRef.current)
+          streamFlushRef.current = null
+        }
+        if (streamPendingRef.current) {
+          streamPendingRef.current = ""
+        }
       }
     },
     [isStreaming, selectedModel, getAccessToken]
@@ -442,10 +472,11 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
   const walletLabel = walletAddress ? shortenAddress(walletAddress) : null
 
   // Stable children identity: LiveFeedBridge re-renders on ticks without rebuilding chrome
+  const deferredMessages = useDeferredValue(messages)
   const board = useMemo(
     () => (
       <ChatShellBoard
-        messages={messages}
+        messages={deferredMessages}
         isStreaming={isStreaming}
         error={error}
         onRetry={retry}
@@ -471,7 +502,7 @@ export function ChatShell({ userEmail, userName, walletAddress }: ChatShellProps
       />
     ),
     [
-      messages,
+      deferredMessages,
       isStreaming,
       error,
       retry,

@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils"
 import type React from "react"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { AnalysisWordSpan } from "./analysis-word-span"
 
 interface MarkdownRendererProps {
@@ -134,7 +134,7 @@ export function MarkdownRenderer({
             {words.map((word, i) => {
               if (word.match(/\s+/)) return word
               if (!word) return null
-              return <AnalysisWordSpan key={`b-${keyIndex}-${i}`} word={word} />
+              return <AnalysisWordSpan key={`b-${keyIndex}-${i}`} word={word} delay={(keyIndex + i) * 15} />
             })}
           </strong>
         )
@@ -150,7 +150,7 @@ export function MarkdownRenderer({
             {words.map((word, i) => {
               if (word.match(/\s+/)) return word
               if (!word) return null
-              return <AnalysisWordSpan key={`i-${keyIndex}-${i}`} word={word} />
+              return <AnalysisWordSpan key={`i-${keyIndex}-${i}`} word={word} delay={(keyIndex + i) * 15} />
             })}
           </em>
         )
@@ -182,7 +182,7 @@ export function MarkdownRenderer({
           ...words.map((word, i) => {
             if (word.match(/\s+/)) return word
             if (!word) return null
-            return <AnalysisWordSpan key={`w-${keyIndex++}-${i}`} word={word} />
+            return <AnalysisWordSpan key={`w-${keyIndex++}`} word={word} delay={(keyIndex + i) * 15} />
           })
         )
         break
@@ -196,7 +196,7 @@ export function MarkdownRenderer({
           ...words.map((word, i) => {
             if (word.match(/\s+/)) return word
             if (!word) return null
-            return <AnalysisWordSpan key={`t-${keyIndex++}-${i}`} word={word} />
+            return <AnalysisWordSpan key={`t-${keyIndex++}`} word={word} delay={(keyIndex + i) * 15} />
           })
         )
         remaining = remaining.slice(nextSpecial)
@@ -225,23 +225,26 @@ export function MarkdownRenderer({
     )
   }
 
-  const renderContent = (text: string, animated: boolean) => {
-    if (!text) return null
+  const renderContent = useCallback(
+    (text: string, animated: boolean) => {
+      if (!text) return null
 
-    const parts = text.split(/(```[\s\S]*?```)/g)
+      const parts = text.split(/(```[\s\S]*?```)/g)
 
-    return parts.map((part, partIndex) => {
-      if (part.startsWith("```") && part.endsWith("```")) {
-        return renderCodeBlock(part, partIndex)
-      }
+      return parts.map((part, partIndex) => {
+        if (part.startsWith("```") && part.endsWith("```")) {
+          return renderCodeBlock(part, partIndex)
+        }
 
-      if (animated) {
-        return <span key={partIndex}>{renderAnimatedInlineMarkdown(part)}</span>
-      }
+        if (animated) {
+          return <span key={partIndex}>{renderAnimatedInlineMarkdown(part)}</span>
+        }
 
-      return <span key={partIndex}>{renderPlainInlineMarkdown(part)}</span>
-    })
-  }
+        return <span key={partIndex}>{renderPlainInlineMarkdown(part)}</span>
+      })
+    },
+    []
+  )
 
   return (
     <div className={cn("whitespace-pre-wrap break-words text-sm text-foreground/90", className)}>

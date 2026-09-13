@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { AlertCircle, RefreshCw } from "lucide-react"
 import { Renderer, type ActionEvent } from "@openuidev/react-lang"
 import { ThemeProvider } from "@openuidev/react-ui/ThemeProvider"
@@ -55,7 +55,20 @@ export function AgentCanvas({
   const canvasShell = useCanvasShell()
   const { syncCanvasShell } = useCanvasFeed()
   const onShellDocument = onShellDocumentProp ?? syncCanvasShell
-  const live = resolveCanvasDocument(messages, isStreaming)
+  const lastAssistant =
+    messages.length > 0 && messages[messages.length - 1]?.role === "assistant"
+      ? messages[messages.length - 1]
+      : null
+  const live = useMemo(
+    () =>
+      resolveCanvasDocument(messages, isStreaming),
+    [
+      lastAssistant?.id,
+      lastAssistant?.content,
+      isStreaming,
+      messages.length,
+    ]
+  )
 
   useEffect(() => {
     if (live) {
