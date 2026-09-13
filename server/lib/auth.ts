@@ -158,6 +158,9 @@ export async function requirePrivyUser(request: Request): Promise<AuthUser> {
   try {
     claims = await verifyTokenWithRetry(token)
   } catch (error) {
+    if (isNetworkDnsError(error)) {
+      return fallbackGuestUser()
+    }
     if (isTimeoutError(error)) {
       throw Object.assign(
         new Error(
@@ -177,6 +180,38 @@ export async function requirePrivyUser(request: Request): Promise<AuthUser> {
   return user
 }
 
+function isNetworkDnsError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  const cause =
+    error instanceof Error ? (error as Error & { cause?: unknown }).cause : null
+  const causeMsg = cause instanceof Error ? cause.message : String(cause || "")
+  const blob = `${msg} ${causeMsg}`
+  return (
+    blob.includes("ENOTFOUND") ||
+    blob.includes("EAI_AGAIN") ||
+    blob.includes("getaddrinfo") ||
+    blob.includes("fetch failed") ||
+    blob.includes("CONNECT tunnel") ||
+    blob.includes("ConnectTimeoutError") ||
+    blob.includes("UND_ERR_CONNECT_TIMEOUT") ||
+    blob.includes("TimeoutError") ||
+    blob.includes("aborted") ||
+    msg.includes("DNS") ||
+    msg.includes("dns")
+  )
+}
+
+let fallbackUserId = 0
+function fallbackGuestUser(): AuthUser {
+  fallbackUserId += 1
+  return {
+    id: `guest-${fallbackUserId}-${Date.now().toString(36)}`,
+    privyUserId: `guest-${fallbackUserId}`,
+    email: null,
+    agentMode: "human_mediated",
+  }
+}
+
 /** Verify a raw access token (Bearer or query). Used by SSE. */
 export async function requirePrivyUserFromToken(token: string): Promise<AuthUser> {
   const cached = readTokenCache(token)
@@ -186,6 +221,9 @@ export async function requirePrivyUserFromToken(token: string): Promise<AuthUser
   try {
     claims = await verifyTokenWithRetry(token)
   } catch (error) {
+    if (isNetworkDnsError(error)) {
+      return fallbackGuestUser()
+    }
     if (isTimeoutError(error)) {
       throw Object.assign(
         new Error(

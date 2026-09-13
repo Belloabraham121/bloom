@@ -18,6 +18,7 @@ import {
 } from "@openuidev/react-ui/genui-lib"
 import { z } from "zod/v4"
 import { useLiveFeed, useCanvasSlot, useCanvasFeed } from "@/components/chat/live-feed-context"
+import { useDemoFeed, readDemoLastTick } from "@/components/chat/demo-feed-context"
 import { OpenUIErrorBoundary } from "@/components/chat/error-boundary"
 import { AnimatedOrb } from "@/components/chat/animated-orb"
 import { Button } from "@/components/ui/button"
@@ -415,8 +416,22 @@ const Root = defineComponent({
   ),
 })
 
+function ResumeLiveButton({ label = "Resume live playback" }: { label?: string }) {
+  const { resumeLive } = useLiveFeed()
+  return (
+    <Button
+      type="button"
+      size="sm"
+      className="h-8 text-xs"
+      onClick={() => void resumeLive()}
+    >
+      {label}
+    </Button>
+  )
+}
+
 function LiveMarketSwitcherView({ title }: { title?: string }) {
-  const { liveActive, watchedPair, switchMarket, working } = useLiveFeed()
+  const { liveActive, liveAvailable, watchedPair, switchMarket, working } = useLiveFeed()
   const presets = [
     { symbol0: "USDC", symbol1: "ETH", label: "USDC/ETH" },
     { symbol0: "USDC", symbol1: "WBTC", label: "USDC/WBTC" },
@@ -430,9 +445,18 @@ function LiveMarketSwitcherView({ title }: { title?: string }) {
   return (
     <CardShell title={title || "Markets"}>
       {!liveActive ? (
-        <p className="text-xs text-muted-foreground">
-          Start a live watch to switch pairs.
-        </p>
+        liveAvailable ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Live market is paused. Resume playback to stream prices slowly.
+            </p>
+            <ResumeLiveButton />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Start a live watch to switch pairs.
+          </p>
+        )
       ) : (
         <>
           <p className="mb-2 text-[11px] text-muted-foreground">
@@ -478,14 +502,23 @@ const LiveMarketSwitcher = defineComponent({
 })
 
 function LiveActivityView({ title }: { title?: string }) {
-  const { liveActive, working, events, missionAction } = useLiveFeed()
+  const { liveActive, liveAvailable, working, events, missionAction } = useLiveFeed()
   const latest = events[0]
   return (
     <CardShell title={title || "Live agent activity"}>
       {!liveActive ? (
-        <p className="text-xs text-muted-foreground">
-          Waiting for live session… (ask again if this stays empty)
-        </p>
+        liveAvailable ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Live updates are paused for this conversation.
+            </p>
+            <ResumeLiveButton />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Waiting for live session… (ask again if this stays empty)
+          </p>
+        )
       ) : (
         <>
           <div className="mb-2 flex items-center gap-2">
@@ -564,11 +597,18 @@ const LiveActivity = defineComponent({
 })
 
 function LiveTradeTapeView({ title }: { title?: string }) {
-  const { liveActive, tapeRows } = useLiveFeed()
+  const { liveActive, liveAvailable, tapeRows } = useLiveFeed()
   return (
     <CardShell title={title || "Live trade tape"}>
       {!liveActive ? (
-        <p className="text-xs text-muted-foreground">Waiting for live session…</p>
+        liveAvailable ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Live trade tape is paused.</p>
+            <ResumeLiveButton />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">Waiting for live session…</p>
+        )
       ) : tapeRows.length === 0 ? (
         <p className="text-xs text-muted-foreground">Waiting for trades…</p>
       ) : (
@@ -625,7 +665,7 @@ function LivePriceSparkline({
   if (series.length === 0) {
     return (
       <div className="flex h-28 items-center justify-center rounded-lg bg-muted/30 text-[11px] text-muted-foreground">
-        Collecting price samples…
+        Waiting for live price…
       </div>
     )
   }
@@ -671,7 +711,7 @@ function LivePriceSparkline({
 }
 
 function LiveMarketTickView({ title }: { title?: string }) {
-  const { liveActive, lastTick, tickHistory, watchedPair } = useLiveFeed()
+  const { liveActive, liveAvailable, lastTick, tickHistory, watchedPair } = useLiveFeed()
   const pair =
     lastTick && (lastTick.symbol0 || lastTick.symbol1)
       ? `${String(lastTick.symbol1 || "")}/${String(lastTick.symbol0 || "")}`
@@ -684,26 +724,31 @@ function LiveMarketTickView({ title }: { title?: string }) {
       ? Number(lastTick.amount1)
       : null
   const source =
-    typeof lastTick?.pool === "string" && lastTick.pool.startsWith("coingecko:")
-      ? "CoinGecko"
-      : typeof lastTick?.pool === "string" &&
-          lastTick.pool.startsWith("defillama:")
-        ? "DefiLlama"
-        : typeof lastTick?.pool === "string" &&
-            lastTick.pool.startsWith("binance:")
-          ? "Binance"
-          : lastTick?.pool
-            ? "Uniswap"
-            : null
+    typeof lastTick?.pool === "string" && lastTick.pool.startsWith("defillama:")
+      ? "DefiLlama"
+      : typeof lastTick?.pool === "string" && lastTick.pool.startsWith("binance:")
+        ? "Binance"
+        : lastTick?.pool
+          ? "Uniswap"
+          : null
 
   return (
     <CardShell title={title || "Live market"}>
       {!liveActive || !lastTick ? (
-        <p className="text-xs text-muted-foreground">
-          {liveActive
-            ? `Connecting price feed${pair ? ` for ${pair}` : ""}…`
-            : "Waiting for live session…"}
-        </p>
+        liveAvailable && !liveActive ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Live market is paused{pair ? ` for ${pair}` : ""}.
+            </p>
+            <ResumeLiveButton />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {liveActive
+              ? `Connecting price feed${pair ? ` for ${pair}` : ""}…`
+              : "Waiting for live session…"}
+          </p>
+        )
       ) : (
         <div className="space-y-2">
           <div className="flex items-baseline justify-between gap-2">
@@ -727,7 +772,7 @@ function LiveMarketTickView({ title }: { title?: string }) {
           <LivePriceSparkline points={tickHistory} />
           {source && (
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground/80">
-              via {source} · {tickHistory.length} samples
+              via {source} · live
             </p>
           )}
         </div>
@@ -747,18 +792,25 @@ const LiveMarketTick = defineComponent({
 })
 
 function LiveMarketChartView({ title }: { title?: string }) {
-  const { liveActive, tickHistory, lastTick } = useLiveFeed()
+  const { liveActive, liveAvailable, tickHistory, lastTick } = useLiveFeed()
   return (
     <CardShell title={title || "Price chart"}>
       {!liveActive ? (
-        <p className="text-xs text-muted-foreground">Waiting for live session…</p>
+        liveAvailable ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Price chart is paused.</p>
+            <ResumeLiveButton />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">Waiting for live session…</p>
+        )
       ) : (
         <>
           <LivePriceSparkline points={tickHistory} />
           <p className="mt-1 text-[11px] text-muted-foreground">
             {lastTick
               ? `${String(lastTick.symbol1 || "")}/${String(lastTick.symbol0 || "")} · ${tickHistory.length} points`
-              : "Waiting for first tick…"}
+              : "Waiting for live price…"}
           </p>
         </>
       )}
@@ -777,14 +829,21 @@ const LiveMarketChart = defineComponent({
 })
 
 function InflightTradeView({ title }: { title?: string }) {
-  const { events, liveActive } = useLiveFeed()
+  const { events, liveActive, liveAvailable } = useLiveFeed()
   const inflight = events.find((e) =>
     ["quoting", "signing", "submitted", "deciding"].includes(e.step)
   )
   return (
     <CardShell title={title || "In-flight trade"}>
       {!liveActive ? (
-        <p className="text-xs text-muted-foreground">No live session.</p>
+        liveAvailable ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Live trade updates are paused.</p>
+            <ResumeLiveButton />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">No live session.</p>
+        )
       ) : !inflight ? (
         <p className="text-xs text-muted-foreground">No trade in flight.</p>
       ) : (
@@ -805,6 +864,560 @@ const InflightTrade = defineComponent({
     title: z.string().optional(),
   }),
   component: ({ props }) => <InflightTradeView title={props.title} />,
+})
+
+function DemoMarketTickView({ feedId, title }: { feedId: string; title?: string }) {
+  const { session, loading, startDemo, resumeFeed } = useDemoFeed()
+  const feed = session?.feeds[feedId]
+  const cached = !feed || feed.history.length === 0 ? readDemoLastTick(feedId) : null
+  const priceDisplay =
+    feed?.price && feed.price > 0 ? feed.priceDisplay : cached?.priceDisplay
+  return (
+    <CardShell title={title || "Market"}>
+      {!feed && !cached ? (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">No feed is attached to this panel.</p>
+          <Button type="button" size="sm" className="h-8 text-xs" disabled={loading} onClick={() => void startDemo().catch(() => {})}>
+            Start feeds
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="text-sm font-medium text-foreground">
+              {feed ? `${feed.symbol1}/${feed.symbol0}` : feedId.replace("_", "/")}
+            </p>
+            <p
+              key={feed?.updatedAt || cached?.at || "none"}
+              className="price-tick font-mono text-lg tabular-nums text-foreground"
+            >
+              {priceDisplay || "—"}
+            </p>
+          </div>
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={`h-1.5 w-1.5 rounded-full ${feed && !feed.paused && priceDisplay ? "bg-emerald-400" : "bg-muted-foreground/50"}`} />
+            {feed?.lastError
+              ? feed.lastError
+              : feed && !feed.paused
+                ? "Live"
+                : cached
+                  ? "Last price · reconnecting"
+                  : "Connecting…"}
+            {feed?.paused ? " · paused" : ""}
+            {feed && feed.history.length > 0 ? ` · ${feed.history.length} pts` : ""}
+          </p>
+          <LivePriceSparkline points={feed?.history || (cached ? [{ price: cached.price, at: cached.at }] : [])} />
+          {feed?.paused && (
+            <Button type="button" size="sm" className="h-8 text-xs" onClick={() => void resumeFeed(feed.feedId)}>
+              Resume {feed.feedId}
+            </Button>
+          )}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+const DemoMarketTick = defineComponent({
+  name: "DemoMarketTick",
+  description: "Live price panel for one feed. Pass feedId such as USDC_ETH.",
+  props: z.object({
+    feedId: z.string(),
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <DemoMarketTickView feedId={props.feedId} title={props.title} />,
+})
+
+function DemoMarketChartView({ feedId, title }: { feedId: string; title?: string }) {
+  const { session } = useDemoFeed()
+  const feed = session?.feeds[feedId]
+  const cached = !feed || feed.history.length === 0 ? readDemoLastTick(feedId) : null
+  const points = feed && feed.history.length > 0
+    ? feed.history
+    : cached
+      ? [{ price: cached.price, at: cached.at }]
+      : []
+  return (
+    <CardShell title={title || "Price chart"}>
+      {points.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Waiting for live price…</p>
+      ) : (
+        <>
+          <LivePriceSparkline points={points} />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {feed
+              ? `${feed.symbol1}/${feed.symbol0} · ${feed.history.length} points${feed.paused ? " · paused" : ""}`
+              : `${feedId.replace("_", "/")} · last price`}
+          </p>
+        </>
+      )}
+    </CardShell>
+  )
+}
+
+const DemoMarketChart = defineComponent({
+  name: "DemoMarketChart",
+  description: "Live price chart for one feed.",
+  props: z.object({
+    feedId: z.string(),
+    title: z.string().optional(),
+  }),
+  component: ({ props }) => <DemoMarketChartView feedId={props.feedId} title={props.title} />,
+})
+
+function DemoFeedControlsView({ feedId }: { feedId: string }) {
+  const { session, pauseFeed, resumeFeed } = useDemoFeed()
+  const feed = session?.feeds[feedId]
+  if (!feed) return null
+  return (
+    <CardShell title="Feed controls">
+      <div className="flex flex-wrap gap-2">
+        {feed.paused ? (
+          <Button type="button" size="sm" className="h-8 text-xs" onClick={() => void resumeFeed(feed.feedId)}>
+            Resume
+          </Button>
+        ) : (
+          <Button type="button" size="sm" variant="outline" className="h-8 text-xs" onClick={() => void pauseFeed(feed.feedId)}>
+            Pause
+          </Button>
+        )}
+      </div>
+    </CardShell>
+  )
+}
+
+const DemoFeedControls = defineComponent({
+  name: "DemoFeedControls",
+  description: "Pause or resume one feed.",
+  props: z.object({ feedId: z.string() }),
+  component: ({ props }) => <DemoFeedControlsView feedId={props.feedId} />,
+})
+
+function DemoBalanceBoardView({ title }: { title?: string }) {
+  const { session, loading, startDemo, resetDemo } = useDemoFeed()
+  return (
+    <CardShell title={title || "Portfolio"}>
+      {!session ? (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">Ledger is not started.</p>
+          <Button type="button" size="sm" className="h-8 text-xs" disabled={loading} onClick={() => void startDemo().catch(() => {})}>
+            Start with 200 USDC · 0.1 ETH
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {session.balances.formatted.map((row: { symbol: string; display: string }) => (
+            <div key={row.symbol} className="flex items-baseline justify-between gap-2 border-b border-border/30 pb-2 text-xs last:border-0">
+              <span className="font-medium">{row.symbol}</span>
+              <span className="font-mono text-muted-foreground">{row.display}</span>
+            </div>
+          ))}
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <span className="text-[10px] text-muted-foreground">Virtual balances · wallet untouched</span>
+            <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={loading} onClick={() => void resetDemo().catch(() => {})}>
+              Reset
+            </Button>
+          </div>
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+const DemoBalanceBoard = defineComponent({
+  name: "DemoBalanceBoard",
+  description: "Portfolio ledger. Defaults to 200 USDC and 0.1 ETH.",
+  props: z.object({ title: z.string().optional() }),
+  component: ({ props }) => <DemoBalanceBoardView title={props.title} />,
+})
+
+function demoSideLabel(side: string): string {
+  if (side === "lp-add") return "LP add";
+  if (side === "lp-remove") return "LP remove";
+  return side;
+}
+
+function demoStatusLabel(status: string): string {
+  if (status === "sim_quoting") return "Quoting";
+  if (status === "sim_signing") return "Signing";
+  if (status === "sim_submitted") return "Submitted";
+  if (status === "sim_confirming") return "Confirming";
+  if (status === "simulated-confirmed") return "Filled";
+  if (status === "sim_failed") return "Failed";
+  return status;
+}
+
+function DemoTradeTapeView({ title }: { title?: string }) {
+  const { session } = useDemoFeed()
+  const rows = session?.transactions || []
+  return (
+    <CardShell title={title || "Trades"}>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Transactions will appear here.</p>
+      ) : (
+        <div className="max-h-40 overflow-y-auto">
+          {rows.map((row: { id: string; side: string; status: string; txHash: string; explorerUrl: string }) => (
+            <div key={row.id} className="flex items-center gap-2 border-b border-border/30 py-1.5 text-[11px] last:border-0">
+              <span className="rounded bg-muted px-1.5 py-0.5 font-medium">{demoSideLabel(row.side)}</span>
+              <span className="text-muted-foreground">{demoStatusLabel(row.status)}</span>
+              <a
+                href={row.explorerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto font-mono text-[10px] text-primary hover:underline"
+              >
+                {row.txHash.slice(0, 10)}…
+              </a>
+            </div>
+          ))}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+const DemoTradeTape = defineComponent({
+  name: "DemoTradeTape",
+  description: "Scrolling tape of transactions with explorer links.",
+  props: z.object({ title: z.string().optional() }),
+  component: ({ props }) => <DemoTradeTapeView title={props.title} />,
+})
+
+function DemoExecutionView({
+  feedId,
+  title,
+  side = "buy",
+  amount = "2",
+}: {
+  feedId: string;
+  title?: string;
+  side?: "buy" | "sell";
+  amount?: string;
+}) {
+  const { session, quoteDemo, swapDemo } = useDemoFeed()
+  const [busy, setBusy] = useState(false)
+  const [activeSide, setActiveSide] = useState<"buy" | "sell">(side)
+  const [activeAmount, setActiveAmount] = useState(amount)
+  const [quote, setQuote] = useState<{
+    amountIn?: string;
+    amountOut?: string;
+    feeBps?: number;
+    slippageBps?: number;
+  } | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const feed = session?.feeds[feedId]
+  const latest = session?.transactions.find((row) => row.feedId === feedId) || session?.transactions[0]
+  const executing = latest && ["sim_quoting", "sim_signing", "sim_submitted", "sim_confirming"].includes(latest.status)
+
+  useEffect(() => {
+    setActiveSide(side)
+  }, [side])
+
+  useEffect(() => {
+    setActiveAmount(amount)
+  }, [amount])
+
+  useEffect(() => {
+    if (!session || !feed || !/^\d+(\.\d+)?$/.test(activeAmount)) {
+      setQuote(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      void quoteDemo(feedId, activeSide, activeAmount)
+        .then((result: unknown) => {
+          setQuote(
+            result as {
+              amountIn?: string;
+              amountOut?: string;
+              feeBps?: number;
+              slippageBps?: number;
+            }
+          )
+          setQuoteError(null)
+        })
+        .catch((e: unknown) => {
+          setQuote(null)
+          setQuoteError(e instanceof Error ? e.message : "Quote failed")
+        })
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [session, feed, feedId, activeSide, activeAmount, quoteDemo])
+
+  const refreshQuote = () => {
+    setBusy(true)
+    setError(null)
+    void quoteDemo(feedId, activeSide, activeAmount)
+      .then((result: unknown) =>
+        setQuote(
+          result as {
+            amountIn?: string;
+            amountOut?: string;
+            feeBps?: number;
+            slippageBps?: number;
+          }
+        )
+      )
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Quote failed"))
+      .finally(() => setBusy(false))
+  }
+
+  const runSwap = () => {
+    setBusy(true)
+    setError(null)
+    void swapDemo(feedId, activeSide, activeAmount)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Paper trade failed"))
+      .finally(() => setBusy(false))
+  }
+
+  const usdcBalance = session?.balances.formatted.find((row) => row.symbol === "USDC")?.display
+  const assetSymbol = feed?.symbol1 || ""
+  const assetBalance = assetSymbol
+    ? session?.balances.formatted.find((row) => row.symbol === assetSymbol)?.display
+    : undefined
+
+  return (
+    <CardShell title={title || "Execution"}>
+      {!session ? (
+        <p className="text-xs text-muted-foreground">Start the session to trade.</p>
+      ) : (
+        <div className="space-y-2 text-xs">
+          <p className="text-muted-foreground">
+            {feed ? `${feed.symbol1}/${feed.symbol0} @ ${feed.priceDisplay}` : feedId.replace("_", "/")}
+          </p>
+          {(usdcBalance || assetBalance) && (
+            <p className="font-mono text-[11px] text-foreground/80">
+              {usdcBalance}
+              {assetBalance ? ` · ${assetBalance}` : ""}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex overflow-hidden rounded-lg border border-border/60">
+              {(["buy", "sell"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setActiveSide(option)}
+                  className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
+                    activeSide === option ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <input
+              value={activeAmount}
+              disabled={busy}
+              onChange={(e) => setActiveAmount(e.target.value)}
+              inputMode="decimal"
+              aria-label="Paper trade amount"
+              className="h-8 w-24 rounded-lg border border-border/60 bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              disabled={busy}
+              onClick={refreshQuote}
+            >
+              Quote
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 text-xs"
+              disabled={busy}
+              onClick={runSwap}
+            >
+              {activeSide === "buy" ? "Buy" : "Sell"}
+            </Button>
+          </div>
+          {quote && (
+            <p className="text-muted-foreground">
+              Estimated: {quote.amountIn} → {quote.amountOut} · fee {quote.feeBps} bps · slippage {quote.slippageBps} bps
+            </p>
+          )}
+          {quoteError && !quote && <p className="text-destructive">{quoteError}</p>}
+          {latest && (
+            <p className="text-muted-foreground">
+              {executing ? "Executing" : "Latest"}: {latest.pair} · {demoStatusLabel(latest.status)} ·{" "}
+              <a href={latest.explorerUrl} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline">
+                {latest.txHash.slice(0, 10)}…
+              </a>
+            </p>
+          )}
+          {error && <p className="text-destructive">{error}</p>}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+const DemoExecution = defineComponent({
+  name: "DemoExecution",
+  description: "Run a quote and trade for one feed against the virtual ledger.",
+  props: z.object({
+    feedId: z.string(),
+    title: z.string().optional(),
+    side: z.enum(["buy", "sell"]).optional(),
+    amount: z.string().optional(),
+  }),
+  component: ({ props }) => (
+    <DemoExecutionView feedId={props.feedId} title={props.title} side={props.side} amount={props.amount} />
+  ),
+})
+
+function DemoLiquidityView({
+  feedId,
+  title,
+  usdcAmount = "2",
+}: {
+  feedId: string;
+  title?: string;
+  usdcAmount?: string;
+}) {
+  const { session, quoteDemo, liquidityDemo } = useDemoFeed()
+  const [busy, setBusy] = useState(false)
+  const [usdc, setUsdc] = useState(usdcAmount)
+  const [asset, setAsset] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const feed = session?.feeds[feedId]
+  const positions = (session?.positions || []).filter((row) => row.feedId === feedId)
+  const formatRaw = (raw: string, symbol: string) => {
+    const decimals = session?.balances.formatted.find((row) => row.symbol === symbol)?.decimals ?? 18
+    const padded = raw.padStart(decimals + 1, "0")
+    const whole = padded.slice(0, -decimals) || "0"
+    const fraction = padded.slice(-decimals).replace(/0+$/, "")
+    return fraction ? `${whole}.${fraction}` : whole
+  }
+  const latest = session?.transactions.find((row) => row.feedId === feedId && row.side.startsWith("lp-"))
+  const executing = latest && ["sim_quoting", "sim_signing", "sim_submitted", "sim_confirming"].includes(latest.status)
+
+  useEffect(() => {
+    setUsdc(usdcAmount)
+  }, [usdcAmount])
+
+  useEffect(() => {
+    if (!session || !feed || !/^\d+(\.\d+)?$/.test(usdc)) {
+      return
+    }
+    const timer = setTimeout(() => {
+      void quoteDemo(feedId, "buy", usdc)
+        .then((result: unknown) => {
+          const quote = result as { amountOut?: string }
+          if (quote?.amountOut) setAsset(quote.amountOut)
+        })
+        .catch(() => {
+          /* keep the last asset estimate; swap validation surfaces errors */
+        })
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [session, feed, feedId, usdc, quoteDemo])
+
+  const runAdd = () => {
+    setBusy(true)
+    setError(null)
+    void liquidityDemo({ feedId, action: "add", usdcAmount: usdc, assetAmount: asset })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Paper liquidity failed"))
+      .finally(() => setBusy(false))
+  }
+
+  const runRemove = (positionId: string) => {
+    setBusy(true)
+    setError(null)
+    void liquidityDemo({ feedId, action: "remove", positionId })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Paper liquidity failed"))
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <CardShell title={title || "Liquidity"}>
+      {!session || !feed ? (
+        <p className="text-xs text-muted-foreground">Start the session to provide liquidity.</p>
+      ) : (
+        <div className="space-y-2 text-xs">
+          <p className="text-muted-foreground">
+            {feed.symbol1}/{feed.symbol0} @ {feed.priceDisplay}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={usdc}
+              disabled={busy}
+              onChange={(e) => setUsdc(e.target.value)}
+              inputMode="decimal"
+              aria-label="Paper liquidity USDC amount"
+              className="h-8 w-24 rounded-lg border border-border/60 bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+            />
+            <span className="text-muted-foreground">USDC +</span>
+            <input
+              value={asset}
+              disabled={busy}
+              onChange={(e) => setAsset(e.target.value)}
+              inputMode="decimal"
+              aria-label={`Paper liquidity ${feed.symbol1} amount`}
+              className="h-8 w-28 rounded-lg border border-border/60 bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+            />
+            <span className="text-muted-foreground">{feed.symbol1}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" className="h-8 text-xs" disabled={busy} onClick={runAdd}>
+              Add liquidity
+            </Button>
+          </div>
+          {positions.length > 0 ? (
+            <div className="space-y-1">
+              {positions.map((position) => (
+                <div key={position.id} className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="min-w-0 flex-1 truncate">
+                    {position.pair} · {formatRaw(position.usdcRaw, "USDC")} USDC + {formatRaw(position.assetRaw, position.assetSymbol)} {position.assetSymbol}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px]"
+                    disabled={busy}
+                    onClick={() => runRemove(position.id)}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground">No positions on this feed.</p>
+          )}
+          {latest && (
+            <p className="text-muted-foreground">
+              {executing ? "Executing" : "Latest"}: {latest.pair} · {demoStatusLabel(latest.status)} ·{" "}
+              <a href={latest.explorerUrl} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline">
+                {latest.txHash.slice(0, 10)}…
+              </a>
+            </p>
+          )}
+          {error && <p className="text-destructive">{error}</p>}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+const DemoLiquidity = defineComponent({
+  name: "DemoLiquidity",
+  description: "Add or remove liquidity for one feed against the virtual ledger.",
+  props: z.object({
+    feedId: z.string(),
+    title: z.string().optional(),
+    usdcAmount: z.string().optional(),
+  }),
+  component: ({ props }) => (
+    <DemoLiquidityView feedId={props.feedId} title={props.title} usdcAmount={props.usdcAmount} />
+  ),
 })
 
 /** Filled by createLibrary below — nested slot Renderer uses the same library. */
@@ -1179,6 +1792,13 @@ const TRADING_COMPONENTS = [
   LiveMarketTick,
   LiveMarketChart,
   InflightTrade,
+  DemoMarketTick,
+  DemoMarketChart,
+  DemoFeedControls,
+  DemoBalanceBoard,
+  DemoTradeTape,
+  DemoExecution,
+  DemoLiquidity,
   CanvasSlot,
   CanvasFrame,
   CanvasWorld,
@@ -1241,7 +1861,7 @@ patch_canvas op=replace widgetId=analytics kind=openui data={{openui: "Stack([ti
 }
 
 export const bloomLibrary = createLibrary({
-  id: "bloom-trading@6",
+  id: "bloom-trading@8",
   root: "Stack",
   componentGroups: [...openuiComponentGroups, tradingComponentGroup],
   components: [

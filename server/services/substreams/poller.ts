@@ -1,5 +1,5 @@
 /**
- * Market tick poller: CoinGecko for watched-pair price (reliable), Graph for pool context.
+ * Market tick poller: Spot sources for watched-pair price, Graph for pool context.
  */
 
 import { publishMarketEvent } from "@/server/services/market/bus"
